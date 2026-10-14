@@ -12,7 +12,8 @@ trap 'rm -rf "$tmpdir"' EXIT
 
 curl -fsS --max-time 15 https://www.cloudflare.com/ips-v4 -o "$tmpdir/v4"
 curl -fsS --max-time 15 https://www.cloudflare.com/ips-v6 -o "$tmpdir/v6"
-cat "$tmpdir/v4" "$tmpdir/v6" | sed '/^\s*$/d' >"$tmpdir/all"
+# The published files may lack a trailing newline; join them line-safely.
+{ cat "$tmpdir/v4"; echo; cat "$tmpdir/v6"; echo; } | sed '/^\s*$/d' >"$tmpdir/all"
 if [ "$(wc -l <"$tmpdir/all")" -lt 10 ] ||
 	grep -vqE '^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}$|^[0-9a-f:]+/[0-9]{1,3}$' "$tmpdir/all"; then
 	echo "unexpected Cloudflare IP list; nothing changed" >&2
