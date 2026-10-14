@@ -5,89 +5,242 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"fmt"
+	"net"
+	"net/url"
 	"os"
+	"strconv"
+	"strings"
+	"time"
 )
 
 type Config struct {
-	JaaSAppID     string
-	JaaSKeyID     string
-	JaaSKey       *rsa.PrivateKey
-	AdminPassword string
-	SessionSecret []byte
-	ListenAddr    string
-	DBPath        string
+	// PublicOrigin is the scheme://host the browser sees (e.g.
+	// https://meet.transgenia.org). Every state-changing POST must carry a
+	// matching Origin or Referer.
+	PublicOrigin string
+	ListenAddr   string
+	DBPath       string
+
+	JaaSAppID string
+	JaaSKeyID string
+	JaaSKey   *rsa.PrivateKey
+
+	// WebhookSecret is the per-endpoint signing secret shown by the JaaS
+	// console ("Reveal secret"). Webhooks without a valid signature are
+	// rejected.
+	WebhookSecret    []byte
+	WebhookTolerance time.Duration
+
+	// AdminInitialPasswordFile is read only when no admin credential exists
+	// yet; the password is stored hashed and must be changed on first login.
+	AdminInitialPasswordFile string
+
+	OpenAIKey          string
+	OpenAIModel        string
+	OpenAIBaseURL      string
+	WorkerMaxAttempts  int
+	MaxTranscriptSize  int64 // bytes downloaded from JaaS
+	MaxTranscriptChars int   // characters sent to the model
+
+	DownloadAllowedHosts []string
+	TrustedProxies       []*net.IPNet
+
+	TranscriptRetentionDays int
+	MinutesRetentionDays    int
+	DisplayTimezone         *time.Location
+
+	// Cloudflare Access in front of /admin. When TeamDomain and AUD are set,
+	// every /admin request must carry a valid Cf-Access-Jwt-Assertion.
+	CFAccessTeamDomain    string
+	CFAccessAUD           string
+	CFAccessAllowedEmails []string
+
+	// SecureCookies is false only for local development over plain HTTP.
+	SecureCookies bool
 }
 
-func LoadConfig() (*Config, error) {
-	appID := os.Getenv("JAAS_APP_ID")
-	if appID == "" {
-		return nil, fmt.Errorf("JAAS_APP_ID is required")
-	}
-
-	keyID := os.Getenv("JAAS_API_KEY_ID")
-	if keyID == "" {
-		return nil, fmt.Errorf("JAAS_API_KEY_ID is required")
-	}
-
-	// The key may be supplied inline (convenient for container platforms that
-	// only offer environment secrets) or as a path to a PEM file.
-	keyData := []byte(os.Getenv("JAAS_API_KEY"))
-	if len(keyData) == 0 {
-		keyPath := os.Getenv("JAAS_API_KEY_PATH")
-		if keyPath == "" {
-			return nil, fmt.Errorf("JAAS_API_KEY or JAAS_API_KEY_PATH is required")
-		}
-		var err error
-		keyData, err = os.ReadFile(keyPath)
+// readSecret returns the value of NAME_FILE (preferred) or NAME. Files keep
+// secrets out of the process environment and `docker inspect`.
+func readSecret(name string) (string, error) {
+	if path := os.Getenv(name + "_FILE"); path != "" {
+		b, err := os.ReadFile(path)
 		if err != nil {
-			return nil, fmt.Errorf("reading JAAS_API_KEY_PATH: %w", err)
+			return "", fmt.Errorf("reading %s_FILE: %w", name, err)
+		}
+		return strings.TrimSpace(string(b)), nil
+	}
+	return strings.TrimSpace(os.Getenv(name)), nil
+}
+
+func requireSecret(name string) (string, error) {
+	v, err := readSecret(name)
+	if err != nil {
+		return "", err
+	}
+	if v == "" {
+		return "", fmt.Errorf("%s (or %s_FILE) is required", name, name)
+	}
+	return v, nil
+}
+
+func envDefault(name, def string) string {
+	if v := strings.TrimSpace(os.Getenv(name)); v != "" {
+		return v
+	}
+	return def
+}
+
+func envInt(name string, def int) (int, error) {
+	v := strings.TrimSpace(os.Getenv(name))
+	if v == "" {
+		return def, nil
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 0 {
+		return 0, fmt.Errorf("%s must be a non-negative integer", name)
+	}
+	return n, nil
+}
+
+func splitList(v string) []string {
+	var out []string
+	for _, s := range strings.Split(v, ",") {
+		if s = strings.TrimSpace(s); s != "" {
+			out = append(out, s)
 		}
 	}
+	return out
+}
 
+func parseRSAKey(keyData []byte) (*rsa.PrivateKey, error) {
 	block, _ := pem.Decode(keyData)
 	if block == nil {
-		return nil, fmt.Errorf("no PEM block found in the JaaS API key")
+		return nil, fmt.Errorf("no PEM block found in the JaaS private key")
 	}
 	key, err := x509.ParsePKCS8PrivateKey(block.Bytes)
 	if err != nil {
-		// Try PKCS1 as fallback
-		key, err = x509.ParsePKCS1PrivateKey(block.Bytes)
-		if err != nil {
+		rsaKey, err1 := x509.ParsePKCS1PrivateKey(block.Bytes)
+		if err1 != nil {
 			return nil, fmt.Errorf("parsing private key: %w", err)
 		}
+		return rsaKey, nil
 	}
 	rsaKey, ok := key.(*rsa.PrivateKey)
 	if !ok {
 		return nil, fmt.Errorf("private key is not RSA")
 	}
+	return rsaKey, nil
+}
 
-	adminPass := os.Getenv("ADMIN_PASSWORD")
-	if adminPass == "" {
-		return nil, fmt.Errorf("ADMIN_PASSWORD is required")
+func parseCIDRs(list []string) ([]*net.IPNet, error) {
+	var nets []*net.IPNet
+	for _, s := range list {
+		if !strings.Contains(s, "/") {
+			if strings.Contains(s, ":") {
+				s += "/128"
+			} else {
+				s += "/32"
+			}
+		}
+		_, n, err := net.ParseCIDR(s)
+		if err != nil {
+			return nil, fmt.Errorf("invalid CIDR %q", s)
+		}
+		nets = append(nets, n)
+	}
+	return nets, nil
+}
+
+func LoadConfig() (*Config, error) {
+	cfg := &Config{
+		ListenAddr:               envDefault("LISTEN_ADDR", ":8370"),
+		DBPath:                   envDefault("DB_PATH", "./jaas.db"),
+		OpenAIBaseURL:            strings.TrimRight(envDefault("OPENAI_BASE_URL", "https://api.openai.com/v1"), "/"),
+		AdminInitialPasswordFile: os.Getenv("ADMIN_INITIAL_PASSWORD_FILE"),
+		CFAccessTeamDomain:       strings.TrimSpace(os.Getenv("CF_ACCESS_TEAM_DOMAIN")),
+		CFAccessAUD:              strings.TrimSpace(os.Getenv("CF_ACCESS_AUD")),
+		CFAccessAllowedEmails:    splitList(strings.ToLower(os.Getenv("CF_ACCESS_ALLOWED_EMAILS"))),
+		SecureCookies:            os.Getenv("DEV_INSECURE_COOKIES") != "true",
 	}
 
-	sessionSecret := os.Getenv("SESSION_SECRET")
-	if sessionSecret == "" {
-		return nil, fmt.Errorf("SESSION_SECRET is required")
+	origin := strings.TrimRight(os.Getenv("PUBLIC_ORIGIN"), "/")
+	u, err := url.Parse(origin)
+	if origin == "" || err != nil || u.Host == "" || u.Path != "" {
+		return nil, fmt.Errorf("PUBLIC_ORIGIN must be scheme://host, e.g. https://meet.transgenia.org")
+	}
+	if u.Scheme != "https" && cfg.SecureCookies {
+		return nil, fmt.Errorf("PUBLIC_ORIGIN must be https (set DEV_INSECURE_COOKIES=true only for local development)")
+	}
+	cfg.PublicOrigin = origin
+
+	if cfg.JaaSAppID = strings.TrimSpace(os.Getenv("JAAS_APP_ID")); cfg.JaaSAppID == "" {
+		return nil, fmt.Errorf("JAAS_APP_ID is required")
+	}
+	if cfg.JaaSKeyID = strings.TrimSpace(os.Getenv("JAAS_API_KEY_ID")); cfg.JaaSKeyID == "" {
+		return nil, fmt.Errorf("JAAS_API_KEY_ID is required")
+	}
+	pemKey, err := requireSecret("JAAS_PRIVATE_KEY")
+	if err != nil {
+		return nil, err
+	}
+	if cfg.JaaSKey, err = parseRSAKey([]byte(pemKey)); err != nil {
+		return nil, err
 	}
 
-	listenAddr := os.Getenv("LISTEN_ADDR")
-	if listenAddr == "" {
-		listenAddr = ":8370"
+	webhookSecret, err := requireSecret("JAAS_WEBHOOK_SECRET")
+	if err != nil {
+		return nil, err
+	}
+	cfg.WebhookSecret = []byte(webhookSecret)
+
+	tolerance, err := envInt("WEBHOOK_TOLERANCE_SECONDS", 300)
+	if err != nil {
+		return nil, err
+	}
+	cfg.WebhookTolerance = time.Duration(tolerance) * time.Second
+
+	if cfg.OpenAIKey, err = requireSecret("OPENAI_API_KEY"); err != nil {
+		return nil, err
+	}
+	// No default model: the deployer picks one the account actually has
+	// (see `jaas-app models`).
+	if cfg.OpenAIModel = strings.TrimSpace(os.Getenv("OPENAI_MODEL")); cfg.OpenAIModel == "" {
+		return nil, fmt.Errorf("OPENAI_MODEL is required (run `jaas-app models` to list the ones available)")
 	}
 
-	dbPath := os.Getenv("DB_PATH")
-	if dbPath == "" {
-		dbPath = "./jaas.db"
+	if cfg.WorkerMaxAttempts, err = envInt("WORKER_MAX_ATTEMPTS", 5); err != nil {
+		return nil, err
+	}
+	maxMB, err := envInt("MAX_TRANSCRIPT_MB", 20)
+	if err != nil {
+		return nil, err
+	}
+	cfg.MaxTranscriptSize = int64(maxMB) << 20
+	if cfg.MaxTranscriptChars, err = envInt("MAX_TRANSCRIPT_CHARS", 500000); err != nil {
+		return nil, err
 	}
 
-	return &Config{
-		JaaSAppID:     appID,
-		JaaSKeyID:     keyID,
-		JaaSKey:       rsaKey,
-		AdminPassword: adminPass,
-		SessionSecret: []byte(sessionSecret),
-		ListenAddr:    listenAddr,
-		DBPath:        dbPath,
-	}, nil
+	cfg.DownloadAllowedHosts = splitList(envDefault("DOWNLOAD_ALLOWED_HOSTS", "objectstorage.*.oraclecloud.com"))
+	if cfg.TrustedProxies, err = parseCIDRs(splitList(envDefault("TRUSTED_PROXIES", "127.0.0.0/8,::1,172.16.0.0/12"))); err != nil {
+		return nil, err
+	}
+
+	if cfg.TranscriptRetentionDays, err = envInt("TRANSCRIPT_RETENTION_DAYS", 90); err != nil {
+		return nil, err
+	}
+	if cfg.MinutesRetentionDays, err = envInt("MINUTES_RETENTION_DAYS", 365); err != nil {
+		return nil, err
+	}
+	if cfg.DisplayTimezone, err = time.LoadLocation(envDefault("DISPLAY_TIMEZONE", "America/Mexico_City")); err != nil {
+		return nil, fmt.Errorf("DISPLAY_TIMEZONE: %w", err)
+	}
+
+	if (cfg.CFAccessTeamDomain == "") != (cfg.CFAccessAUD == "") {
+		return nil, fmt.Errorf("CF_ACCESS_TEAM_DOMAIN and CF_ACCESS_AUD must be set together")
+	}
+	if os.Getenv("REQUIRE_CF_ACCESS") == "true" && cfg.CFAccessTeamDomain == "" {
+		return nil, fmt.Errorf("REQUIRE_CF_ACCESS=true but CF_ACCESS_TEAM_DOMAIN/CF_ACCESS_AUD are empty")
+	}
+
+	return cfg, nil
 }

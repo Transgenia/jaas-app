@@ -1,0 +1,9 @@
+[Unit]
+Description=tgn-meetings: verified SQLite backup
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/transgenia-meetings/bin/backup.sh
+Nice=10

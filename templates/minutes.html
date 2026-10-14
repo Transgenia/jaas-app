@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="es">
+<head>
+	<meta charset="utf-8" />
+	<meta name="viewport" content="width=device-width, initial-scale=1" />
+	<meta name="robots" content="noindex, nofollow" />
+	<title>Minuta · {{.M.RoomSlug}}</title>
+	<link rel="stylesheet" href="/static/app.css" />
+</head>
+<body>
+	<div class="page">
+		<p><a href="/admin">← Volver al panel</a></p>
+		<div class="card wide doc">
+			<h1>Minuta · {{.M.RoomSlug}}</h1>
+			<p class="sub">Reunión {{local .M.MeetingAt}} ({{.TZ}}) · sesión {{.M.SessionID}}{{with .M.Model}} · modelo {{.}}{{end}}</p>
+			{{if eq .M.Status "ready"}}
+			<p class="notice">Borrador generado automáticamente. Revísalo antes de compartirlo o actuar sobre él.</p>
+			<div class="row">
+				<a class="btn secondary" href="/admin/minutes/{{.M.ID}}/download">Descargar Markdown</a>
+				<a class="btn secondary" href="/admin/minutes/{{.M.ID}}/download?format=json">Descargar JSON</a>
+			</div>
+			<h2>Resumen</h2>
+			<p>{{.R.Summary}}</p>
+			<h2>Decisiones</h2>
+			{{if .R.Decisions}}<ul>{{range .R.Decisions}}<li><strong>{{.Decision}}</strong> — {{.Context}}</li>{{end}}</ul>{{else}}<p class="muted">Sin decisiones explícitas.</p>{{end}}
+			<h2>Tareas</h2>
+			{{if .R.ActionItems}}
+			<table>
+				<tr><th>Tarea</th><th>Responsable</th><th>Fecha</th><th>Confianza</th><th>Evidencia</th></tr>
+				{{range .R.ActionItems}}
+				<tr><td>{{.Task}}</td><td>{{with .Owner}}{{deref .}}{{else}}—{{end}}</td><td>{{with .DueDate}}{{deref .}}{{else}}—{{end}}</td>
+					<td><span class="badge {{if eq .Confidence "high"}}ok{{else if eq .Confidence "medium"}}warn{{else}}bad{{end}}">{{.Confidence}}</span></td>
+					<td class="muted">{{.Evidence}}</td></tr>
+				{{end}}
+			</table>
+			{{else}}<p class="muted">Sin tareas.</p>{{end}}
+			<h2>Riesgos</h2>
+			{{if .R.Risks}}<ul>{{range .R.Risks}}<li>{{.}}</li>{{end}}</ul>{{else}}<p class="muted">Ninguno.</p>{{end}}
+			<h2>Preguntas abiertas</h2>
+			{{if .R.OpenQuestions}}<ul>{{range .R.OpenQuestions}}<li>{{.}}</li>{{end}}</ul>{{else}}<p class="muted">Ninguna.</p>{{end}}
+			{{else if eq .M.Status "failed"}}
+			<p class="error">No se pudo generar la minuta (intento {{.M.Attempts}}): {{.M.Error}}</p>
+			<form method="POST" action="/admin/minutes/{{.M.ID}}/retry">
+				<input type="hidden" name="csrf_token" value="{{.CSRF}}" />
+				<button type="submit">Reintentar</button>
+			</form>
+			{{else}}
+			<p class="notice">Estado: {{if eq .M.Status "processing"}}procesando{{else}}en cola{{end}} (intento {{.M.Attempts}}).{{with .M.Error}} Último error: {{.}}{{end}}</p>
+			{{end}}
+		</div>
+	</div>
+</body>
+</html>
