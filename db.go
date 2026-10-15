@@ -23,6 +23,7 @@ type Room struct {
 	HostHash      string
 	Active        bool
 	Transcription bool
+	OwnerEmail    string
 	ActivatedAt   time.Time
 	CreatedAt     time.Time
 }
@@ -109,6 +110,11 @@ var migrations = []string{
 		expires_at   INTEGER NOT NULL
 	);
 	CREATE INDEX participant_sessions_room ON participant_sessions(room_slug);`,
+	// v2: per-user rooms. Identity comes from Cloudflare Access; rooms with an
+	// empty owner (created in password mode) are visible to admins only.
+	`ALTER TABLE rooms ADD COLUMN owner_email TEXT NOT NULL DEFAULT '';
+	CREATE INDEX rooms_owner ON rooms(owner_email);
+	ALTER TABLE admin_sessions ADD COLUMN email TEXT NOT NULL DEFAULT '';`,
 }
 
 func InitDB(path string) (*DB, error) {
@@ -166,20 +172,20 @@ func fromUnix(v sql.NullInt64) time.Time {
 
 // --- rooms ---
 
-func (db *DB) CreateRoom(slug, hostHash string) error {
+func (db *DB) CreateRoom(slug, hostHash, ownerEmail string) error {
 	_, err := db.conn.Exec(
-		"INSERT INTO rooms (slug, host_hash, created_at) VALUES (?, ?, ?)",
-		slug, hostHash, db.unix(),
+		"INSERT INTO rooms (slug, host_hash, owner_email, created_at) VALUES (?, ?, ?, ?)",
+		slug, hostHash, ownerEmail, db.unix(),
 	)
 	return err
 }
 
-const roomColumns = "id, slug, host_hash, active, transcription, activated_at, created_at"
+const roomColumns = "id, slug, host_hash, active, transcription, owner_email, activated_at, created_at"
 
 func scanRoom(sc interface{ Scan(...any) error }) (*Room, error) {
 	var r Room
 	var activated, created sql.NullInt64
-	if err := sc.Scan(&r.ID, &r.Slug, &r.HostHash, &r.Active, &r.Transcription, &activated, &created); err != nil {
+	if err := sc.Scan(&r.ID, &r.Slug, &r.HostHash, &r.Active, &r.Transcription, &r.OwnerEmail, &activated, &created); err != nil {
 		return nil, err
 	}
 	r.ActivatedAt = fromUnix(activated)
@@ -196,7 +202,15 @@ func (db *DB) GetRoom(slug string) (*Room, error) {
 }
 
 func (db *DB) ListRooms() ([]Room, error) {
-	rows, err := db.conn.Query("SELECT " + roomColumns + " FROM rooms ORDER BY created_at DESC, id DESC")
+	return db.listRooms("SELECT " + roomColumns + " FROM rooms ORDER BY created_at DESC, id DESC")
+}
+
+func (db *DB) ListRoomsOwnedBy(email string) ([]Room, error) {
+	return db.listRooms("SELECT "+roomColumns+" FROM rooms WHERE owner_email = ? ORDER BY created_at DESC, id DESC", email)
+}
+
+func (db *DB) listRooms(q string, args ...any) ([]Room, error) {
+	rows, err := db.conn.Query(q, args...)
 	if err != nil {
 		return nil, err
 	}

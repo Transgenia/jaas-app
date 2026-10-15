@@ -162,18 +162,22 @@ func validateNewAdminPassword(current, next string) error {
 
 // --- admin sessions ---
 
+// AdminSession is a panel session. Email is the Cloudflare Access identity
+// (empty in password mode); Superadmin is resolved per request.
 type AdminSession struct {
 	TokenHash  string
 	CSRFToken  string
 	MustChange bool
+	Email      string
+	Superadmin bool
 }
 
-func (db *DB) CreateAdminSession() (token string, err error) {
+func (db *DB) CreateAdminSession(email string) (token string, err error) {
 	token = randomToken()
 	now := db.now()
 	_, err = db.conn.Exec(
-		"INSERT INTO admin_sessions (token_hash, csrf_token, created_at, last_seen_at, expires_at) VALUES (?, ?, ?, ?, ?)",
-		hashToken(token), randomToken(), now.Unix(), now.Unix(), now.Add(adminAbsoluteTimeout).Unix(),
+		"INSERT INTO admin_sessions (token_hash, csrf_token, email, created_at, last_seen_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)",
+		hashToken(token), randomToken(), email, now.Unix(), now.Unix(), now.Add(adminAbsoluteTimeout).Unix(),
 	)
 	return token, err
 }
@@ -187,11 +191,11 @@ func (db *DB) GetAdminSession(token string) (*AdminSession, error) {
 	var s AdminSession
 	var lastSeen int64
 	err := db.conn.QueryRow(
-		`SELECT s.token_hash, s.csrf_token, s.last_seen_at, COALESCE(c.must_change, 1)
+		`SELECT s.token_hash, s.csrf_token, s.email, s.last_seen_at, COALESCE(c.must_change, 1)
 		 FROM admin_sessions s LEFT JOIN admin_credentials c ON c.id = 1
 		 WHERE s.token_hash = ? AND s.expires_at > ?`,
 		h, now.Unix(),
-	).Scan(&s.TokenHash, &s.CSRFToken, &lastSeen, &s.MustChange)
+	).Scan(&s.TokenHash, &s.CSRFToken, &s.Email, &lastSeen, &s.MustChange)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}

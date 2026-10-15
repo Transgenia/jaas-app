@@ -1,12 +1,14 @@
 package main
 
 import (
+	"context"
 	"embed"
 	"encoding/json"
 	"errors"
 	"html/template"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -101,24 +103,47 @@ func (app *App) requireCFAccess(next http.Handler) http.Handler {
 		return next
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if err := app.CFAccess.Verify(r.Context(), r.Header.Get("Cf-Access-Jwt-Assertion")); err != nil {
+		email, err := app.CFAccess.Verify(r.Context(), r.Header.Get("Cf-Access-Jwt-Assertion"))
+		if err != nil {
 			slog.Warn("admin: cloudflare access rejected", "ip", app.clientIP(r))
 			http.Error(w, "Forbidden", http.StatusForbidden)
 			return
 		}
-		next.ServeHTTP(w, r)
+		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), accessEmailKey, email)))
 	})
 }
 
 type ctxKey int
 
-const adminSessionKey ctxKey = 1
+const (
+	adminSessionKey ctxKey = iota + 1
+	accessEmailKey
+)
+
+// identityMode: Cloudflare Access authenticates each person and the app
+// scopes rooms to their e-mail. Without Access the panel falls back to the
+// single admin password (break-glass / local development).
+func (app *App) identityMode() bool { return app.CFAccess != nil }
+
+func accessEmail(r *http.Request) string {
+	e, _ := r.Context().Value(accessEmailKey).(string)
+	return e
+}
+
+func (app *App) isSuperadmin(email string) bool {
+	return slices.Contains(app.Config.AdminEmails, email)
+}
 
 // requireAdmin validates the server-side session, enforces the CSRF token on
 // every POST and, until the temporary password is replaced, confines the
-// session to the password page.
+// session to the password page. In identity mode the session is created from
+// the verified Access identity and discarded if that identity changes.
 func (app *App) requireAdmin(next http.HandlerFunc, passwordPage bool) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if app.identityMode() {
+			app.requireIdentity(w, r, next, passwordPage)
+			return
+		}
 		s, err := app.DB.GetAdminSession(app.cookieValue(r, "tgm_admin"))
 		if err != nil {
 			if !errors.Is(err, ErrNotFound) {
@@ -137,8 +162,85 @@ func (app *App) requireAdmin(next http.HandlerFunc, passwordPage bool) http.Hand
 			http.Redirect(w, r, "/admin/password", http.StatusSeeOther)
 			return
 		}
+		s.Superadmin = true // password mode has a single administrator
 		next.ServeHTTP(w, r.WithContext(contextWithAdmin(r, s)))
 	})
+}
+
+func (app *App) requireIdentity(w http.ResponseWriter, r *http.Request, next http.HandlerFunc, passwordPage bool) {
+	email := accessEmail(r)
+	if email == "" { // requireCFAccess must run first
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
+	if passwordPage {
+		http.Redirect(w, r, "/admin", http.StatusSeeOther)
+		return
+	}
+	token := app.cookieValue(r, "tgm_admin")
+	s, err := app.DB.GetAdminSession(token)
+	if err != nil && !errors.Is(err, ErrNotFound) {
+		app.serverError(w, "admin session", err)
+		return
+	}
+	if err == nil && s.Email != email {
+		app.DB.DeleteAdminSession(token) // Access identity changed: drop the old session
+		s = nil
+	}
+	if s == nil || err != nil {
+		if r.Method == http.MethodPost { // no valid CSRF token can exist yet
+			http.Error(w, "Forbidden", http.StatusForbidden)
+			return
+		}
+		token, err = app.DB.CreateAdminSession(email)
+		if err != nil {
+			app.serverError(w, "admin session", err)
+			return
+		}
+		if s, err = app.DB.GetAdminSession(token); err != nil {
+			app.serverError(w, "admin session", err)
+			return
+		}
+		app.setCookie(w, "tgm_admin", token, adminAbsoluteTimeout)
+		slog.Info("admin: session", "user", email)
+	}
+	if r.Method == http.MethodPost && !tokensEqual(r.PostFormValue("csrf_token"), s.CSRFToken) {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
+	s.MustChange = false
+	s.Superadmin = app.isSuperadmin(email)
+	next.ServeHTTP(w, r.WithContext(contextWithAdmin(r, s)))
+}
+
+// canManage reports whether the current admin may see or act on a room.
+func canManage(s *AdminSession, room *Room) bool {
+	return s.Superadmin || (s.Email != "" && room.OwnerEmail == s.Email)
+}
+
+// adminRoom loads the room in the path and enforces ownership. Rooms of
+// other users answer 404, not 403, so their names are not confirmed.
+func (app *App) adminRoom(w http.ResponseWriter, r *http.Request) (*Room, bool) {
+	room, ok := app.roomFromPath(w, r)
+	if !ok {
+		return nil, false
+	}
+	if !canManage(adminFrom(r), room) {
+		app.render(w, http.StatusNotFound, "notfound.html", nil)
+		return nil, false
+	}
+	return room, true
+}
+
+// adminRoomBySlug enforces ownership for objects (minutes, transcripts) that
+// reference a room by slug.
+func (app *App) adminRoomBySlug(w http.ResponseWriter, r *http.Request, slug string) bool {
+	room, err := app.DB.GetRoom(slug)
+	if err != nil || !canManage(adminFrom(r), room) {
+		http.NotFound(w, r)
+		return false
+	}
+	return true
 }
 
 // formToken implements a double-submit token for forms used before any
@@ -174,10 +276,18 @@ func (app *App) handleHome(w http.ResponseWriter, r *http.Request) {
 // --- admin auth ---
 
 func (app *App) handleLoginPage(w http.ResponseWriter, r *http.Request) {
+	if app.identityMode() {
+		http.Redirect(w, r, "/admin", http.StatusSeeOther)
+		return
+	}
 	app.render(w, http.StatusOK, "login.html", map[string]any{"FormToken": app.formToken(w, r)})
 }
 
 func (app *App) handleLogin(w http.ResponseWriter, r *http.Request) {
+	if app.identityMode() {
+		http.Redirect(w, r, "/admin", http.StatusSeeOther)
+		return
+	}
 	ip := app.clientIP(r)
 	if !app.checkFormToken(r) {
 		http.Error(w, "Forbidden", http.StatusForbidden)
@@ -210,7 +320,7 @@ func (app *App) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	app.loginLimiter.Reset(ip)
-	token, err := app.DB.CreateAdminSession()
+	token, err := app.DB.CreateAdminSession("")
 	if err != nil {
 		app.serverError(w, "login", err)
 		return
@@ -231,6 +341,11 @@ func (app *App) handleLogout(w http.ResponseWriter, r *http.Request) {
 		app.DB.DeleteAdminSession(token)
 	}
 	app.clearCookie(w, "tgm_admin")
+	if app.identityMode() {
+		// Also end the Cloudflare Access session for this hostname.
+		http.Redirect(w, r, "/cdn-cgi/access/logout", http.StatusSeeOther)
+		return
+	}
 	http.Redirect(w, r, "/admin/login", http.StatusSeeOther)
 }
 
@@ -273,7 +388,7 @@ func (app *App) handlePasswordChange(w http.ResponseWriter, r *http.Request) {
 		app.serverError(w, "password", err)
 		return
 	}
-	token, err := app.DB.CreateAdminSession()
+	token, err := app.DB.CreateAdminSession("")
 	if err != nil {
 		app.serverError(w, "password", err)
 		return
@@ -287,6 +402,7 @@ func (app *App) handlePasswordChange(w http.ResponseWriter, r *http.Request) {
 
 type roomView struct {
 	Slug           string
+	Owner          string
 	Active         bool
 	Transcription  bool
 	DialIn         *DialInInfo
@@ -297,7 +413,14 @@ type roomView struct {
 
 func (app *App) dashboardData(r *http.Request, extra map[string]any) (map[string]any, error) {
 	app.DB.DeactivateExpiredRooms(4 * time.Hour)
-	rooms, err := app.DB.ListRooms()
+	s := adminFrom(r)
+	var rooms []Room
+	var err error
+	if s.Superadmin {
+		rooms, err = app.DB.ListRooms()
+	} else {
+		rooms, err = app.DB.ListRoomsOwnedBy(s.Email)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -307,7 +430,7 @@ func (app *App) dashboardData(r *http.Request, extra map[string]any) (map[string
 	}
 	var views []roomView
 	for _, room := range rooms {
-		rv := roomView{Slug: room.Slug, Active: room.Active, Transcription: room.Transcription}
+		rv := roomView{Slug: room.Slug, Owner: room.OwnerEmail, Active: room.Active, Transcription: room.Transcription}
 		if numbers != nil {
 			if pin, err := app.DialIn.FetchPIN(app.Config.JaaSAppID, room.Slug); err == nil {
 				rv.DialIn = &DialInInfo{PIN: pin, Numbers: numbers}
@@ -326,8 +449,11 @@ func (app *App) dashboardData(r *http.Request, extra map[string]any) (map[string
 	}
 	data := map[string]any{
 		"Rooms":        views,
-		"CSRF":         adminFrom(r).CSRFToken,
+		"CSRF":         s.CSRFToken,
 		"PublicOrigin": app.Config.PublicOrigin,
+		"Email":        s.Email,
+		"Superadmin":   s.Superadmin,
+		"IdentityMode": app.identityMode(),
 	}
 	for k, v := range extra {
 		data[k] = v
@@ -368,11 +494,12 @@ func (app *App) handleCreateRoom(w http.ResponseWriter, r *http.Request) {
 		app.serverError(w, "create room", err)
 		return
 	}
-	if err := app.DB.CreateRoom(slug, string(hash)); err != nil {
+	owner := adminFrom(r).Email
+	if err := app.DB.CreateRoom(slug, string(hash), owner); err != nil {
 		app.renderDashboard(w, r, http.StatusConflict, map[string]any{"Error": "Ya existe una sala con ese identificador."})
 		return
 	}
-	slog.Info("admin: room created", "room", slug)
+	slog.Info("admin: room created", "room", slug, "user", owner)
 	http.Redirect(w, r, "/admin", http.StatusSeeOther)
 }
 
@@ -396,7 +523,7 @@ func (app *App) roomFromPath(w http.ResponseWriter, r *http.Request) (*Room, boo
 }
 
 func (app *App) handleDeleteRoom(w http.ResponseWriter, r *http.Request) {
-	room, ok := app.roomFromPath(w, r)
+	room, ok := app.adminRoom(w, r)
 	if !ok {
 		return
 	}
@@ -404,12 +531,12 @@ func (app *App) handleDeleteRoom(w http.ResponseWriter, r *http.Request) {
 		app.serverError(w, "delete room", err)
 		return
 	}
-	slog.Info("admin: room deleted with its recordings, transcripts and minutes", "room", room.Slug)
+	slog.Info("admin: room deleted with its recordings, transcripts and minutes", "room", room.Slug, "user", adminFrom(r).Email)
 	http.Redirect(w, r, "/admin", http.StatusSeeOther)
 }
 
 func (app *App) handleAdminStart(w http.ResponseWriter, r *http.Request) {
-	room, ok := app.roomFromPath(w, r)
+	room, ok := app.adminRoom(w, r)
 	if !ok {
 		return
 	}
@@ -425,7 +552,7 @@ func (app *App) handleAdminStart(w http.ResponseWriter, r *http.Request) {
 }
 
 func (app *App) handleAdminStop(w http.ResponseWriter, r *http.Request) {
-	room, ok := app.roomFromPath(w, r)
+	room, ok := app.adminRoom(w, r)
 	if !ok {
 		return
 	}
@@ -434,7 +561,7 @@ func (app *App) handleAdminStop(w http.ResponseWriter, r *http.Request) {
 }
 
 func (app *App) handleToggleTranscription(w http.ResponseWriter, r *http.Request) {
-	room, ok := app.roomFromPath(w, r)
+	room, ok := app.adminRoom(w, r)
 	if !ok {
 		return
 	}
@@ -608,6 +735,9 @@ func (app *App) handleViewTranscription(w http.ResponseWriter, r *http.Request) 
 		app.serverError(w, "transcription", err)
 		return
 	}
+	if !app.adminRoomBySlug(w, r, t.RoomSlug) {
+		return
+	}
 	var raw struct {
 		Messages []struct {
 			Name      string `json:"name"`
@@ -636,6 +766,9 @@ func (app *App) loadMinutes(w http.ResponseWriter, r *http.Request) (*Minutes, *
 	}
 	if err != nil {
 		app.serverError(w, "minutes", err)
+		return nil, nil, false
+	}
+	if !app.adminRoomBySlug(w, r, m.RoomSlug) {
 		return nil, nil, false
 	}
 	var res *MinutesResult
@@ -690,6 +823,18 @@ func (app *App) handleRetryMinutes(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathID(r)
 	if !ok {
 		http.NotFound(w, r)
+		return
+	}
+	m, err := app.DB.GetMinutes(id)
+	if errors.Is(err, ErrNotFound) {
+		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
+		app.serverError(w, "retry", err)
+		return
+	}
+	if !app.adminRoomBySlug(w, r, m.RoomSlug) {
 		return
 	}
 	requeued, err := app.DB.RequeueMinutes(id)

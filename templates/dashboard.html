@@ -13,7 +13,8 @@
 		<div class="top">
 			<div class="brand"><img src="/static/logo.svg" alt="Transgenia" /><h1>Reuniones</h1></div>
 			<div class="row">
-				<a class="btn secondary" href="/admin/password">Cambiar contraseña</a>
+				{{with .Email}}<span class="muted">{{.}}{{if $.Superadmin}} · administrador{{end}}</span>{{end}}
+				{{if not .IdentityMode}}<a class="btn secondary" href="/admin/password">Cambiar contraseña</a>{{end}}
 				<form method="POST" action="/admin/logout">
 					<input type="hidden" name="csrf_token" value="{{.CSRF}}" />
 					<button type="submit" class="secondary">Cerrar sesión</button>
@@ -45,7 +46,7 @@
 			<p class="foot" style="text-align:left">Minúsculas, números y guiones. El enlace queda como {{.PublicOrigin}}/m/identificador y se reutiliza en cada reunión.</p>
 		</div>
 
-		<h2>Salas</h2>
+		<h2>{{if .Superadmin}}Salas{{else}}Tus salas{{end}}</h2>
 		{{range .Rooms}}
 		<div class="room">
 			<div class="room-head">
@@ -53,6 +54,7 @@
 					<strong>{{.Slug}}</strong>
 					{{if .Active}}<span class="badge ok">En curso</span>{{else}}<span class="badge">Inactiva</span>{{end}}
 					{{if .Transcription}}<span class="badge warn">Transcripción activa</span>{{end}}
+					{{if and $.Superadmin $.IdentityMode}}<span class="badge">{{with .Owner}}{{.}}{{else}}sin dueño{{end}}</span>{{end}}
 					<div><code>{{$.PublicOrigin}}/m/{{.Slug}}</code>
 						<button type="button" class="linklike" data-copy="{{$.PublicOrigin}}/m/{{.Slug}}">Copiar enlace</button></div>
 					{{with .DialIn}}{{$pin := .PIN}}{{with index .Numbers "MX"}}<div class="muted">Teléfono MX {{index . 0}} · PIN {{$pin}}</div>{{end}}{{end}}

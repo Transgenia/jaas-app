@@ -90,7 +90,7 @@ func itoa(n int64) string { return strconv.FormatInt(n, 10) }
 
 func TestWorkerRetriesThenFails(t *testing.T) {
 	e := newTestEnv(t)
-	e.app.DB.CreateRoom("sala-prueba", "x")
+	e.app.DB.CreateRoom("sala-prueba", "x", "")
 	e.llm.out = []byte(`{"summary": "sin las demás claves"}`)
 	e.signedWebhook(eventJSON("TRANSCRIPTION_UPLOADED", "k1", "s1", "sala-prueba", testLink))
 
@@ -127,7 +127,7 @@ func TestWorkerRetriesThenFails(t *testing.T) {
 
 func TestWorkerPermanentDownloadError(t *testing.T) {
 	e := newTestEnv(t)
-	e.app.DB.CreateRoom("sala-prueba", "x")
+	e.app.DB.CreateRoom("sala-prueba", "x", "")
 	e.rt.status = http.StatusForbidden
 	e.signedWebhook(eventJSON("TRANSCRIPTION_UPLOADED", "k1", "s1", "sala-prueba", testLink))
 	drain(e)
@@ -147,7 +147,7 @@ func TestWorkerPermanentDownloadError(t *testing.T) {
 
 func TestWorkerExpiredLink(t *testing.T) {
 	e := newTestEnv(t)
-	e.app.DB.CreateRoom("sala-prueba", "x")
+	e.app.DB.CreateRoom("sala-prueba", "x", "")
 	e.signedWebhook(eventJSON("TRANSCRIPTION_UPLOADED", "k1", "s1", "sala-prueba", testLink))
 	e.advance(25 * time.Hour)
 	drain(e)
@@ -159,7 +159,7 @@ func TestWorkerExpiredLink(t *testing.T) {
 
 func TestWorkerLeaseRecoversAfterCrash(t *testing.T) {
 	e := newTestEnv(t)
-	e.app.DB.CreateRoom("sala-prueba", "x")
+	e.app.DB.CreateRoom("sala-prueba", "x", "")
 	e.signedWebhook(eventJSON("TRANSCRIPTION_UPLOADED", "k1", "s1", "sala-prueba", testLink))
 	if _, err := e.app.DB.ClaimNextMinutes(15 * time.Minute); err != nil { // claimed, then the process dies
 		t.Fatal(err)
@@ -272,7 +272,7 @@ func TestOpenAIResponsesClient(t *testing.T) {
 
 func TestRetentionPurge(t *testing.T) {
 	e := newTestEnv(t)
-	e.app.DB.CreateRoom("sala-prueba", "x")
+	e.app.DB.CreateRoom("sala-prueba", "x", "")
 	e.signedWebhook(eventJSON("TRANSCRIPTION_UPLOADED", "k1", "s1", "sala-prueba", testLink))
 	e.signedWebhook(eventJSON("RECORDING_UPLOADED", "r1", "s1", "sala-prueba", testLink))
 	drain(e)

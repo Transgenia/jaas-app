@@ -116,7 +116,7 @@ func TestDownloadClientRefusesInternalAddresses(t *testing.T) {
 
 func TestWebhookRequiresSignature(t *testing.T) {
 	e := newTestEnv(t)
-	e.app.DB.CreateRoom("sala-prueba", "x")
+	e.app.DB.CreateRoom("sala-prueba", "x", "")
 	body := eventJSON("TRANSCRIPTION_UPLOADED", "k1", "s1", "sala-prueba", testLink)
 
 	if rr := e.postWebhook(body, ""); rr.Code != http.StatusUnauthorized {
@@ -135,7 +135,7 @@ func TestWebhookRequiresSignature(t *testing.T) {
 
 func TestWebhookIdempotency(t *testing.T) {
 	e := newTestEnv(t)
-	e.app.DB.CreateRoom("sala-prueba", "x")
+	e.app.DB.CreateRoom("sala-prueba", "x", "")
 
 	first := eventJSON("TRANSCRIPTION_UPLOADED", "k1", "s1", "sala-prueba", testLink)
 	for i := 0; i < 3; i++ { // JaaS retrying the same delivery
@@ -157,7 +157,7 @@ func TestWebhookIdempotency(t *testing.T) {
 
 func TestWebhookIgnoresForeignAndUnknown(t *testing.T) {
 	e := newTestEnv(t)
-	e.app.DB.CreateRoom("sala-prueba", "x")
+	e.app.DB.CreateRoom("sala-prueba", "x", "")
 
 	foreign := strings.ReplaceAll(eventJSON("TRANSCRIPTION_UPLOADED", "k1", "s1", "sala-prueba", testLink), testAppID, "vpaas-magic-cookie-other")
 	if rr := e.signedWebhook(foreign); rr.Code != http.StatusOK {
@@ -178,7 +178,7 @@ func TestWebhookIgnoresForeignAndUnknown(t *testing.T) {
 
 func TestWebhookRejectsDisallowedLinks(t *testing.T) {
 	e := newTestEnv(t)
-	e.app.DB.CreateRoom("sala-prueba", "x")
+	e.app.DB.CreateRoom("sala-prueba", "x", "")
 	for i, link := range []string{
 		"http://169.254.169.254/latest/meta-data/iam",
 		"https://internal.example/secret?token=abc",
@@ -209,7 +209,7 @@ func TestWebhookBodyLimit(t *testing.T) {
 
 func TestWebhookStoresRecording(t *testing.T) {
 	e := newTestEnv(t)
-	e.app.DB.CreateRoom("sala-prueba", "x")
+	e.app.DB.CreateRoom("sala-prueba", "x", "")
 	if rr := e.signedWebhook(eventJSON("RECORDING_UPLOADED", "r1", "s1", "sala-prueba", testLink)); rr.Code != http.StatusOK {
 		t.Fatalf("recording: %d", rr.Code)
 	}

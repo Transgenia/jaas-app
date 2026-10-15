@@ -51,9 +51,14 @@ type Config struct {
 
 	// Cloudflare Access in front of /admin. When TeamDomain and AUD are set,
 	// every /admin request must carry a valid Cf-Access-Jwt-Assertion.
-	CFAccessTeamDomain    string
-	CFAccessAUD           string
-	CFAccessAllowedEmails []string
+	CFAccessTeamDomain     string
+	CFAccessAUD            string
+	CFAccessAllowedEmails  []string
+	CFAccessAllowedDomains []string
+
+	// AdminEmails see and manage every room. Everyone else authenticated by
+	// Cloudflare Access only sees the rooms they created.
+	AdminEmails []string
 
 	// SecureCookies is false only for local development over plain HTTP.
 	SecureCookies bool
@@ -160,6 +165,8 @@ func LoadConfig() (*Config, error) {
 		CFAccessTeamDomain:       strings.TrimSpace(os.Getenv("CF_ACCESS_TEAM_DOMAIN")),
 		CFAccessAUD:              strings.TrimSpace(os.Getenv("CF_ACCESS_AUD")),
 		CFAccessAllowedEmails:    splitList(strings.ToLower(os.Getenv("CF_ACCESS_ALLOWED_EMAILS"))),
+		CFAccessAllowedDomains:   splitList(strings.ToLower(os.Getenv("CF_ACCESS_ALLOWED_DOMAINS"))),
+		AdminEmails:              splitList(strings.ToLower(os.Getenv("ADMIN_EMAILS"))),
 		SecureCookies:            os.Getenv("DEV_INSECURE_COOKIES") != "true",
 	}
 

@@ -429,7 +429,7 @@ func TestCloudflareAccessGate(t *testing.T) {
 		return s
 	}
 	get := func(assertion string) int {
-		req := httptest.NewRequest(http.MethodGet, testOrigin+"/admin/login", nil)
+		req := httptest.NewRequest(http.MethodGet, testOrigin+"/admin", nil)
 		if assertion != "" {
 			req.Header.Set("Cf-Access-Jwt-Assertion", assertion)
 		}

@@ -190,6 +190,7 @@ type browser struct {
 	cookies map[string]*http.Cookie
 	origin  string
 	ip      string
+	headers map[string]string
 }
 
 func (e *testEnv) browser() *browser {
@@ -211,6 +212,9 @@ func (b *browser) do(method, path string, form url.Values) *httptest.ResponseRec
 	}
 	for _, c := range b.cookies {
 		req.AddCookie(&http.Cookie{Name: c.Name, Value: c.Value})
+	}
+	for k, v := range b.headers {
+		req.Header.Set(k, v)
 	}
 	rr := httptest.NewRecorder()
 	b.e.h.ServeHTTP(rr, req)

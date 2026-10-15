@@ -76,6 +76,18 @@ docker compose up -d
 
 ## Admin access
 
+**Identity mode (production).** With `CF_ACCESS_TEAM_DOMAIN`/`CF_ACCESS_AUD`
+set, Cloudflare Access authenticates each person (one-time PIN to their
+`@transgenia.org` mailbox) and the app verifies the Access JWT on every
+`/admin` request. There is no shared password: each person creates and sees
+only their own rooms, transcripts and minutes (`rooms.owner_email`);
+`ADMIN_EMAILS` see and manage everything. Rooms of other users answer 404.
+If the Access identity changes, the old panel session is revoked. Logout also
+ends the Access session (`/cdn-cgi/access/logout`).
+
+**Password mode (break-glass / local).** Without Access the panel falls back
+to the single admin password:
+
 * First login uses the temporary password from `secrets/admin_initial_password`
   and forces a change (min. 14 chars); every change revokes all sessions.
 * Lost password: `docker exec -i tgn-meetings /app/jaas-app reset-admin` (reads

@@ -25,8 +25,10 @@ type CFAccessVerifier struct {
 	TeamDomain    string // e.g. transgenia.cloudflareaccess.com
 	AUD           string // Application Audience (AUD) tag
 	AllowedEmails []string
-	HTTP          *http.Client
-	CertsURL      string // override for tests; defaults to the team's certs endpoint
+	// AllowedDomains accepts any address at these domains (e.g. transgenia.org).
+	AllowedDomains []string
+	HTTP           *http.Client
+	CertsURL       string // override for tests; defaults to the team's certs endpoint
 
 	mu        sync.Mutex
 	keys      map[string]*rsa.PublicKey
@@ -38,10 +40,11 @@ func NewCFAccessVerifier(cfg *Config) *CFAccessVerifier {
 		return nil
 	}
 	return &CFAccessVerifier{
-		TeamDomain:    strings.TrimPrefix(strings.TrimSuffix(cfg.CFAccessTeamDomain, "/"), "https://"),
-		AUD:           cfg.CFAccessAUD,
-		AllowedEmails: cfg.CFAccessAllowedEmails,
-		HTTP:          &http.Client{Timeout: 10 * time.Second},
+		TeamDomain:     strings.TrimPrefix(strings.TrimSuffix(cfg.CFAccessTeamDomain, "/"), "https://"),
+		AUD:            cfg.CFAccessAUD,
+		AllowedEmails:  cfg.CFAccessAllowedEmails,
+		AllowedDomains: cfg.CFAccessAllowedDomains,
+		HTTP:           &http.Client{Timeout: 10 * time.Second},
 	}
 }
 
@@ -112,9 +115,11 @@ func (v *CFAccessVerifier) key(ctx context.Context, kid string) (*rsa.PublicKey,
 	return nil, errors.New("cf access: unknown key id")
 }
 
-func (v *CFAccessVerifier) Verify(ctx context.Context, token string) error {
+// Verify checks the assertion and returns the authenticated e-mail address,
+// which the app uses as the user's identity.
+func (v *CFAccessVerifier) Verify(ctx context.Context, token string) (string, error) {
 	if token == "" {
-		return errors.New("cf access: missing assertion")
+		return "", errors.New("cf access: missing assertion")
 	}
 	claims := jwt.MapClaims{}
 	_, err := jwt.ParseWithClaims(token, claims, func(t *jwt.Token) (any, error) {
@@ -128,13 +133,26 @@ func (v *CFAccessVerifier) Verify(ctx context.Context, token string) error {
 		jwt.WithLeeway(30*time.Second),
 	)
 	if err != nil {
-		return errors.New("cf access: invalid assertion")
+		return "", errors.New("cf access: invalid assertion")
 	}
-	if len(v.AllowedEmails) > 0 {
-		email, _ := claims["email"].(string)
-		if !slices.Contains(v.AllowedEmails, strings.ToLower(email)) {
-			return errors.New("cf access: email not allowed")
-		}
+	email, _ := claims["email"].(string)
+	email = strings.ToLower(strings.TrimSpace(email))
+	if email == "" || strings.Count(email, "@") != 1 {
+		return "", errors.New("cf access: assertion without e-mail")
 	}
-	return nil
+	if !v.allowed(email) {
+		return "", errors.New("cf access: email not allowed")
+	}
+	return email, nil
+}
+
+func (v *CFAccessVerifier) allowed(email string) bool {
+	if len(v.AllowedEmails) == 0 && len(v.AllowedDomains) == 0 {
+		return true // the Access policy is the only gate
+	}
+	if slices.Contains(v.AllowedEmails, email) {
+		return true
+	}
+	domain := email[strings.LastIndex(email, "@")+1:]
+	return slices.Contains(v.AllowedDomains, domain)
 }
