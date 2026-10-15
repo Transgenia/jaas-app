@@ -104,6 +104,21 @@ Transcripts and minutes: `TRANSCRIPT_RETENTION_MONTHS` / `MINUTES_RETENTION_MONT
 (calendar months, Transgenia uses 9) or the `*_DAYS` variants (defaults 90 and
 365). The effective values are logged at start-up.
 
+## Sending transcripts and minutes to participants
+
+Guests must give an e-mail and accept the transcription notice (with a link
+to the privacy notice) to join; hosts from the team use their Access e-mail.
+The e-mail goes into the JaaS JWT, so the signed `PARTICIPANT_JOINED` webhook
+tells exactly who was in each session (add that event to the JaaS webhook).
+When the minutes are ready the host sees the proposed recipients (confirmed
+in the session, or joined through the link during the meeting), unticks
+anyone and approves. Only addresses from that list can be chosen; each
+address receives the minutes and the full transcript (attachments) once,
+with Reply-To set to the host. Delivery is queued with 3 attempts; SMTP
+replies are reduced to their code. Recipient addresses never appear in logs.
+Participant e-mails follow the transcript retention and are deleted with the
+room; deliveries are deleted with their minutes.
+
 ## Logs
 
 Only method, path, status, timing and client IP; never query strings, bodies,

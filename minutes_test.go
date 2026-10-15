@@ -25,7 +25,7 @@ func mustRead(t *testing.T, path string) string {
 }
 
 func drain(e *testEnv) {
-	for e.app.processOne(context.Background()) {
+	for e.app.processOne(context.Background()) || e.app.processDelivery(context.Background()) {
 	}
 }
 
@@ -301,7 +301,7 @@ func TestNoSecretsInLogs(t *testing.T) {
 	e.createRoom(b, csrf, "sala-prueba")
 	g := e.browser()
 	tok := hidden(t, g.do(http.MethodGet, "/m/sala-prueba", nil).Body.String(), "form_token")
-	g.do(http.MethodPost, "/m/sala-prueba/join", url.Values{"form_token": {tok}, "display_name": {"Anfitrión"}, "host_password": {"anfitrion-secreto"}})
+	g.do(http.MethodPost, "/m/sala-prueba/join", url.Values{"form_token": {tok}, "display_name": {"Anfitrión"}, "email": {"anfitrion@cliente.example"}, "consent": {"on"}, "host_password": {"anfitrion-secreto"}})
 	g.do(http.MethodGet, "/m/sala-prueba", nil)
 	e.signedWebhook(eventJSON("TRANSCRIPTION_UPLOADED", "k1", "s1", "sala-prueba", testLink))
 	e.signedWebhook(eventJSON("RECORDING_UPLOADED", "r1", "s1", "sala-prueba", testLink))

@@ -225,16 +225,17 @@ func (db *DB) DeleteAdminSession(token string) error {
 type ParticipantSession struct {
 	RoomSlug    string
 	DisplayName string
+	Email       string
 	Moderator   bool
 	CSRFToken   string
 }
 
-func (db *DB) CreateParticipantSession(slug, displayName string, moderator bool) (string, error) {
+func (db *DB) CreateParticipantSession(slug, displayName, email string, moderator bool) (string, error) {
 	token := randomToken()
 	now := db.now()
 	_, err := db.conn.Exec(
-		"INSERT INTO participant_sessions (token_hash, room_slug, display_name, moderator, csrf_token, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-		hashToken(token), slug, displayName, moderator, randomToken(), now.Unix(), now.Add(participantLifetime).Unix(),
+		"INSERT INTO participant_sessions (token_hash, room_slug, display_name, email, moderator, csrf_token, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+		hashToken(token), slug, displayName, email, moderator, randomToken(), now.Unix(), now.Add(participantLifetime).Unix(),
 	)
 	return token, err
 }
@@ -245,9 +246,9 @@ func (db *DB) GetParticipantSession(token string) (*ParticipantSession, error) {
 	}
 	var p ParticipantSession
 	err := db.conn.QueryRow(
-		"SELECT room_slug, display_name, moderator, csrf_token FROM participant_sessions WHERE token_hash = ? AND expires_at > ?",
+		"SELECT room_slug, display_name, email, moderator, csrf_token FROM participant_sessions WHERE token_hash = ? AND expires_at > ?",
 		hashToken(token), db.unix(),
-	).Scan(&p.RoomSlug, &p.DisplayName, &p.Moderator, &p.CSRFToken)
+	).Scan(&p.RoomSlug, &p.DisplayName, &p.Email, &p.Moderator, &p.CSRFToken)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}

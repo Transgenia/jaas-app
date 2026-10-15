@@ -19,6 +19,8 @@
 				<form method="POST" action="/m/{{.Slug}}/join">
 					<input type="hidden" name="form_token" value="{{.FormToken}}" />
 					<input type="hidden" name="display_name" value="{{.DisplayName}}" />
+					<input type="hidden" name="email" value="{{.Email}}" />
+					<input type="hidden" name="consent" value="on" />
 					<label for="host_password">Contraseña de anfitrión</label>
 					<input type="password" id="host_password" name="host_password" autocomplete="current-password" />
 					<button type="submit" class="block">Iniciar reunión</button>
@@ -30,6 +32,8 @@
 	<form id="rejoin" method="POST" action="/m/{{.Slug}}/join" class="hidden">
 		<input type="hidden" name="form_token" value="{{.FormToken}}" />
 		<input type="hidden" name="display_name" value="{{.DisplayName}}" />
+		<input type="hidden" name="email" value="{{.Email}}" />
+		<input type="hidden" name="consent" value="on" />
 	</form>
 </body>
 </html>

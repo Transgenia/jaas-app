@@ -1,0 +1,286 @@
+package main
+
+import (
+	"context"
+	"encoding/base64"
+	"errors"
+	"io"
+	"mime"
+	"mime/multipart"
+	"net/http"
+	"net/mail"
+	"net/url"
+	"regexp"
+	"strconv"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+)
+
+type fakeMailer struct {
+	mu   sync.Mutex
+	sent []*Mail
+	err  error
+}
+
+func (f *fakeMailer) Send(_ context.Context, m *Mail) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.err != nil {
+		return f.err
+	}
+	f.sent = append(f.sent, m)
+	return nil
+}
+
+func joinForm(tok, name, email string) url.Values {
+	return url.Values{"form_token": {tok}, "display_name": {name}, "email": {email}, "consent": {"on"}}
+}
+
+func TestJoinRequiresEmailAndConsent(t *testing.T) {
+	e := newTestEnv(t)
+	e.app.DB.CreateRoom("sala-prueba", "x", "")
+	e.app.DB.SetRoomActive("sala-prueba", true)
+	g := e.browser()
+	tok := hidden(t, g.do(http.MethodGet, "/m/sala-prueba", nil).Body.String(), "form_token")
+
+	cases := map[string]url.Values{
+		"no e-mail":        {"form_token": {tok}, "display_name": {"Ana"}, "consent": {"on"}},
+		"bad e-mail":       {"form_token": {tok}, "display_name": {"Ana"}, "email": {"ana@"}, "consent": {"on"}},
+		"header injection": {"form_token": {tok}, "display_name": {"Ana"}, "email": {"ana@x.com\r\nBcc: v@evil.com"}, "consent": {"on"}},
+		"no consent":       {"form_token": {tok}, "display_name": {"Ana"}, "email": {"ana@cliente.example"}},
+	}
+	for name, form := range cases {
+		if rr := g.do(http.MethodPost, "/m/sala-prueba/join", form); rr.Code != http.StatusBadRequest {
+			t.Errorf("%s: %d", name, rr.Code)
+		}
+	}
+	rr := g.do(http.MethodPost, "/m/sala-prueba/join", joinForm(tok, "Ana", " Ana@Cliente.Example "))
+	if rr.Code != http.StatusSeeOther {
+		t.Fatalf("valid join: %d", rr.Code)
+	}
+	c := jwtClaims(t, e, g.do(http.MethodGet, "/m/sala-prueba", nil).Body.String())
+	if got := c["context"].(map[string]any)["user"].(map[string]any)["email"]; got != "ana@cliente.example" {
+		t.Fatalf("JWT e-mail: %v", got)
+	}
+	page := e.browser().do(http.MethodGet, "/m/sala-prueba", nil).Body.String()
+	if !strings.Contains(page, "legal-privacidad.html") || !regexp.MustCompile(`<input type="email"[^>]*name="email"[^>]*required`).MatchString(page) {
+		t.Fatal("join page lacks the privacy notice or the required e-mail field")
+	}
+}
+
+// meetingWithParticipants: Alice (host, Access) runs a meeting where Ana and
+// Beto join through the link; JaaS confirms Ana and Alice in the session.
+func meetingWithParticipants(t *testing.T) (*accessEnv, *browser, string, *Minutes, *fakeMailer) {
+	a := newAccessEnv(t)
+	fm := &fakeMailer{}
+	a.app.Mailer = fm
+	alice, csrf := a.user("alice@transgenia.org")
+	a.createRoom(alice, csrf, "alice-cliente-2026")
+	if rr := alice.do(http.MethodPost, "/admin/rooms/alice-cliente-2026/start", url.Values{"csrf_token": {csrf}, "display_name": {"Alice"}}); rr.Code != http.StatusSeeOther {
+		t.Fatalf("start: %d", rr.Code)
+	}
+	for _, p := range [][2]string{{"Ana", "ana@cliente.example"}, {"Beto", "beto@cliente.example"}} {
+		g := a.browser()
+		tok := hidden(t, g.do(http.MethodGet, "/m/alice-cliente-2026", nil).Body.String(), "form_token")
+		if rr := g.do(http.MethodPost, "/m/alice-cliente-2026/join", joinForm(tok, p[0], p[1])); rr.Code != http.StatusSeeOther {
+			t.Fatalf("join %s: %d", p[0], rr.Code)
+		}
+	}
+	// Someone who used the link in another, earlier meeting.
+	a.app.DB.conn.Exec("INSERT INTO session_participants (room_slug, session_id, email, display_name, source, joined_at) VALUES ('alice-cliente-2026', '', 'viejo@cliente.example', 'Viejo', 'join', ?)", a.now.Add(-48*time.Hour).Unix())
+
+	for _, p := range [][2]string{{"Ana", "ana@cliente.example"}, {"Alice", "alice@transgenia.org"}} {
+		body := `{"idempotencyKey":"pj-` + p[0] + `","appId":"` + testAppID + `","eventType":"PARTICIPANT_JOINED","sessionId":"sess-1","timestamp":` +
+			strconv.FormatInt(a.now.UnixMilli(), 10) + `,"fqn":"` + testAppID + `/alice-cliente-2026","data":{"name":"` + p[0] + `","email":"` + p[1] + `","moderator":false}}`
+		if rr := a.signedWebhook(body); rr.Code != http.StatusOK {
+			t.Fatalf("participant webhook: %d", rr.Code)
+		}
+	}
+	a.advance(time.Hour)
+	tr := strings.Replace(eventJSON("TRANSCRIPTION_UPLOADED", "k1", "sess-1", "alice-cliente-2026", testLink), "1760464800000", strconv.FormatInt(a.now.UnixMilli(), 10), 1)
+	a.signedWebhook(tr)
+	drain(a.testEnv)
+	ms, _ := a.app.DB.ListMinutes("alice-cliente-2026")
+	if len(ms) != 1 || ms[0].Status != "ready" {
+		t.Fatalf("minutes: %+v", ms)
+	}
+	return a, alice, csrf, &ms[0], fm
+}
+
+func TestProposedRecipients(t *testing.T) {
+	a, _, _, m, _ := meetingWithParticipants(t)
+	rs, err := a.app.DB.ProposedRecipients(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]bool{}
+	for _, r := range rs {
+		got[r.Email] = r.InSession
+	}
+	want := map[string]bool{"alice@transgenia.org": true, "ana@cliente.example": true, "beto@cliente.example": false}
+	if len(got) != len(want) {
+		t.Fatalf("recipients: %v", got)
+	}
+	for e, inSession := range want {
+		if v, ok := got[e]; !ok || v != inSession {
+			t.Errorf("%s: present=%v inSession=%v", e, ok, v)
+		}
+	}
+	if _, ok := got["viejo@cliente.example"]; ok {
+		t.Error("participant of another meeting proposed")
+	}
+}
+
+func TestSendRequiresApprovalOwnershipAndList(t *testing.T) {
+	a, alice, csrf, m, fm := meetingWithParticipants(t)
+	id := strconv.FormatInt(m.ID, 10)
+
+	page := alice.do(http.MethodGet, "/admin/minutes/"+id, nil).Body.String()
+	if !strings.Contains(page, "Enviar transcripción y minuta") || !strings.Contains(page, "beto@cliente.example") {
+		t.Fatal("send form not shown")
+	}
+	// Nothing goes out without the host's approval.
+	drain(a.testEnv)
+	if len(fm.sent) != 0 {
+		t.Fatal("e-mail sent without approval")
+	}
+	// CSRF, ownership and the recipient list are enforced.
+	if rr := alice.do(http.MethodPost, "/admin/minutes/"+id+"/send", url.Values{"recipient": {"ana@cliente.example"}}); rr.Code != http.StatusForbidden {
+		t.Errorf("no csrf: %d", rr.Code)
+	}
+	bob, bCSRF := a.user("bob@transgenia.org")
+	if rr := bob.do(http.MethodPost, "/admin/minutes/"+id+"/send", url.Values{"csrf_token": {bCSRF}, "recipient": {"ana@cliente.example"}}); rr.Code != http.StatusNotFound {
+		t.Errorf("other user: %d", rr.Code)
+	}
+	if rr := alice.do(http.MethodPost, "/admin/minutes/"+id+"/send", url.Values{"csrf_token": {csrf}, "recipient": {"ana@cliente.example", "intruso@evil.example"}}); rr.Code != http.StatusBadRequest {
+		t.Errorf("address outside the list: %d", rr.Code)
+	}
+	drain(a.testEnv)
+	if len(fm.sent) != 0 {
+		t.Fatal("rejected requests sent mail")
+	}
+
+	// Approve Ana and Beto (Alice unticks herself).
+	rr := alice.do(http.MethodPost, "/admin/minutes/"+id+"/send", url.Values{"csrf_token": {csrf}, "recipient": {"ana@cliente.example", "beto@cliente.example"}})
+	if rr.Code != http.StatusSeeOther {
+		t.Fatalf("send: %d", rr.Code)
+	}
+	drain(a.testEnv)
+	if len(fm.sent) != 2 {
+		t.Fatalf("sent %d mails", len(fm.sent))
+	}
+	for _, mail := range fm.sent {
+		if mail.ReplyTo != "alice@transgenia.org" || !strings.Contains(mail.Subject, "alice-cliente-2026") {
+			t.Errorf("headers: to=%s reply=%s subject=%s", mail.To, mail.ReplyTo, mail.Subject)
+		}
+		if !strings.Contains(mail.Text, "Se revisó el avance") || !strings.Contains(mail.Text, "alice@transgenia.org la revisó") || !strings.Contains(mail.Text, "legal-privacidad") {
+			t.Errorf("body for %s missing summary, reviewer or privacy notice", mail.To)
+		}
+		if len(mail.Attachments) != 2 || !strings.Contains(string(mail.Attachments[0].Data), "Pablo envía la propuesta") ||
+			!strings.Contains(string(mail.Attachments[1].Data), "| Enviar propuesta |") {
+			t.Errorf("attachments for %s", mail.To)
+		}
+	}
+	// Approving again never duplicates.
+	alice.do(http.MethodPost, "/admin/minutes/"+id+"/send", url.Values{"csrf_token": {csrf}, "recipient": {"ana@cliente.example"}})
+	drain(a.testEnv)
+	if len(fm.sent) != 2 {
+		t.Fatalf("duplicate delivery: %d mails", len(fm.sent))
+	}
+	page = alice.do(http.MethodGet, "/admin/minutes/"+id, nil).Body.String()
+	if strings.Count(page, `badge ok">enviado`) != 2 {
+		t.Error("delivery status not shown")
+	}
+	// No recipient address in the logs.
+	for _, addr := range []string{"ana@cliente.example", "beto@cliente.example"} {
+		if strings.Contains(a.logs.String(), addr) {
+			t.Errorf("log contains %s", addr)
+		}
+	}
+}
+
+func TestDeliveryRetriesThenFails(t *testing.T) {
+	a, alice, csrf, m, fm := meetingWithParticipants(t)
+	fm.err = errors.New("smtp: connection failed")
+	alice.do(http.MethodPost, "/admin/minutes/"+strconv.FormatInt(m.ID, 10)+"/send", url.Values{"csrf_token": {csrf}, "recipient": {"ana@cliente.example"}})
+	for i := 1; i <= maxDeliveryAttempts; i++ {
+		if !a.app.processDelivery(context.Background()) {
+			t.Fatalf("attempt %d not claimed", i)
+		}
+		a.advance(4 * time.Hour)
+	}
+	var status, msg string
+	a.app.DB.conn.QueryRow("SELECT status, error FROM minutes_deliveries").Scan(&status, &msg)
+	if status != "failed" || msg != "smtp: connection failed" {
+		t.Fatalf("status %s error %q", status, msg)
+	}
+	// Permanent SMTP rejection fails at once.
+	fm.err = permanent("smtp: 550")
+	alice.do(http.MethodPost, "/admin/minutes/"+strconv.FormatInt(m.ID, 10)+"/send", url.Values{"csrf_token": {csrf}, "recipient": {"beto@cliente.example"}})
+	a.app.processDelivery(context.Background())
+	a.app.DB.conn.QueryRow("SELECT status FROM minutes_deliveries WHERE email = 'beto@cliente.example'").Scan(&status)
+	if status != "failed" {
+		t.Fatalf("550 not permanent: %s", status)
+	}
+}
+
+func TestDeleteRoomRemovesParticipantsAndDeliveries(t *testing.T) {
+	a, alice, csrf, m, _ := meetingWithParticipants(t)
+	alice.do(http.MethodPost, "/admin/minutes/"+strconv.FormatInt(m.ID, 10)+"/send", url.Values{"csrf_token": {csrf}, "recipient": {"ana@cliente.example"}})
+	if rr := alice.do(http.MethodPost, "/admin/rooms/alice-cliente-2026/delete", url.Values{"csrf_token": {csrf}}); rr.Code != http.StatusSeeOther {
+		t.Fatalf("delete: %d", rr.Code)
+	}
+	for _, q := range []string{"SELECT COUNT(*) FROM session_participants", "SELECT COUNT(*) FROM minutes_deliveries"} {
+		var n int
+		a.app.DB.conn.QueryRow(q).Scan(&n)
+		if n != 0 {
+			t.Errorf("%s: %d left", q, n)
+		}
+	}
+}
+
+func TestBuildMIME(t *testing.T) {
+	m := &Mail{To: "ana@cliente.example", ReplyTo: "alice@transgenia.org", Subject: "Transcripción y minuta: sala (2026-10-15)",
+		Text: "Hola Ana:\nlínea con acentos ñ\n", Attachments: []Attachment{{Name: "t.txt", ContentType: "text/plain; charset=utf-8", Data: []byte("hola transcripción")}}}
+	raw, err := buildMIME("contacto@transgenia.org", "Transgenia Reuniones", m, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	msg, err := mail.ReadMessage(strings.NewReader(string(raw)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dec := new(mime.WordDecoder)
+	subject, _ := dec.DecodeHeader(msg.Header.Get("Subject"))
+	if subject != m.Subject || msg.Header.Get("Reply-To") != "<alice@transgenia.org>" || msg.Header.Get("Bcc") != "" {
+		t.Fatalf("headers: %v", msg.Header)
+	}
+	_, params, _ := mime.ParseMediaType(msg.Header.Get("Content-Type"))
+	mr := multipart.NewReader(msg.Body, params["boundary"])
+	var parts []string
+	for {
+		p, err := mr.NextPart()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, _ := io.ReadAll(p)
+		if p.Header.Get("Content-Transfer-Encoding") == "base64" {
+			b, _ = base64.StdEncoding.DecodeString(string(b))
+		}
+		parts = append(parts, string(b))
+	}
+	if len(parts) != 2 || !strings.Contains(parts[0], "línea con acentos ñ") || parts[1] != "hola transcripción" {
+		t.Fatalf("parts: %q", parts)
+	}
+	s := &smtpMailer{From: "contacto@transgenia.org"}
+	for _, bad := range []string{"ana@x.com\r\nBcc: v@evil.com", "Ana <ana@x.com>", ""} {
+		if err := s.Send(context.Background(), &Mail{To: bad}); err == nil || !isPermanent(err) {
+			t.Errorf("address %q accepted", bad)
+		}
+	}
+}

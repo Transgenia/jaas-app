@@ -117,9 +117,9 @@
 		<div class="card wide" style="margin-top:1.5rem">
 			<h2>Webhook de JaaS</h2>
 			<p>En la consola de JaaS, sección <strong>Webhooks</strong>, el endpoint es
-				<code>{{.PublicOrigin}}/webhook/recording</code> con los eventos <strong>TRANSCRIPTION_UPLOADED</strong> y
-				<strong>RECORDING_UPLOADED</strong>. El secreto de firma ("Reveal secret") se carga en el servidor; los webhooks sin firma válida se rechazan.</p>
-			<p class="muted" style="margin-top:.5rem">Las minutas son borradores para revisión humana: el sistema no envía correos ni crea tareas.</p>
+				<code>{{.PublicOrigin}}/webhook/recording</code> con los eventos <strong>TRANSCRIPTION_UPLOADED</strong>,
+				<strong>RECORDING_UPLOADED</strong> y <strong>PARTICIPANT_JOINED</strong>. El secreto de firma ("Reveal secret") se carga en el servidor; los webhooks sin firma válida se rechazan.</p>
+			<p class="muted" style="margin-top:.5rem">Las minutas son borradores para revisión humana. Solo se envían por correo a los participantes que el anfitrión apruebe desde la minuta; el sistema no crea tareas.</p>
 		</div>
 		<p class="foot">jaas-app {{version}}</p>
 	</div>

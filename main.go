@@ -26,6 +26,7 @@ type App struct {
 	DB             *DB
 	DialIn         *DialInClient
 	LLM            MinutesGenerator
+	Mailer         Mailer // nil when SMTP is not configured
 	DownloadClient *http.Client
 	CFAccess       *CFAccessVerifier
 
@@ -71,6 +72,10 @@ func NewApp(cfg *Config, db *DB) (*App, error) {
 		hostRoomLimiter: newFailureLimiter(20, time.Hour),
 		wake:            make(chan struct{}, 1),
 	}
+	if cfg.SMTPHost != "" {
+		app.Mailer = &smtpMailer{Host: cfg.SMTPHost, Port: cfg.SMTPPort, Security: cfg.SMTPSecurity,
+			User: cfg.SMTPUser, Password: cfg.SMTPPassword, From: cfg.MailFrom, FromName: cfg.MailFromName}
+	}
 	if err := app.loadTemplates(); err != nil {
 		return nil, err
 	}
@@ -103,6 +108,8 @@ func main() {
 		err = cmdResetAdmin()
 	case "models":
 		err = cmdModels()
+	case "send-test-mail":
+		err = cmdSendTestMail(os.Args[2:])
 	case "version":
 		fmt.Println(version)
 	default:
@@ -125,6 +132,7 @@ func printUsage() {
 	fmt.Fprintf(os.Stderr, "  verify-db FILE     Integrity check and row counts of a database file\n")
 	fmt.Fprintf(os.Stderr, "  reset-admin        Read a temporary admin password from stdin; revokes sessions\n")
 	fmt.Fprintf(os.Stderr, "  models             List OpenAI models available to OPENAI_API_KEY\n")
+	fmt.Fprintf(os.Stderr, "  send-test-mail TO  Send a test message through the configured SMTP server\n")
 	fmt.Fprintf(os.Stderr, "  version            Display version information\n")
 }
 
@@ -179,7 +187,8 @@ func cmdServe() error {
 	errCh := make(chan error, 1)
 	go func() {
 		slog.Info("jaas-app listening", "version", version, "addr", cfg.ListenAddr, "model", cfg.OpenAIModel,
-			"retention_transcripts", cfg.TranscriptRetention.String(), "retention_minutes", cfg.MinutesRetention.String())
+			"retention_transcripts", cfg.TranscriptRetention.String(), "retention_minutes", cfg.MinutesRetention.String(),
+			"mail", cfg.SMTPHost != "")
 		errCh <- srv.ListenAndServe()
 	}()
 
@@ -312,5 +321,33 @@ func cmdModels() error {
 	for _, id := range ids {
 		fmt.Println(id)
 	}
+	return nil
+}
+
+func cmdSendTestMail(args []string) error {
+	if len(args) != 1 || normalizeEmail(args[0]) == "" {
+		return errors.New("usage: send-test-mail ADDRESS")
+	}
+	cfg, err := LoadConfig()
+	if err != nil {
+		return err
+	}
+	if cfg.SMTPHost == "" {
+		return errors.New("SMTP_HOST is not configured")
+	}
+	m := &smtpMailer{Host: cfg.SMTPHost, Port: cfg.SMTPPort, Security: cfg.SMTPSecurity,
+		User: cfg.SMTPUser, Password: cfg.SMTPPassword, From: cfg.MailFrom, FromName: cfg.MailFromName}
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	err = m.Send(ctx, &Mail{
+		To:      normalizeEmail(args[0]),
+		Subject: "[tgn-meetings] Prueba del canal de envío",
+		Text: "Mensaje de prueba del servicio de reuniones de Transgenia (meet.transgenia.org).\n" +
+			"Si lo recibes, el envío de transcripciones y minutas aprobadas por el anfitrión funciona.\n",
+	})
+	if err != nil {
+		return err
+	}
+	fmt.Println("sent")
 	return nil
 }

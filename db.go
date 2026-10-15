@@ -115,6 +115,36 @@ var migrations = []string{
 	`ALTER TABLE rooms ADD COLUMN owner_email TEXT NOT NULL DEFAULT '';
 	CREATE INDEX rooms_owner ON rooms(owner_email);
 	ALTER TABLE admin_sessions ADD COLUMN email TEXT NOT NULL DEFAULT '';`,
+	// v3: participant e-mails (asked at join, echoed back by JaaS in
+	// PARTICIPANT_JOINED) and host-approved deliveries of minutes.
+	`ALTER TABLE participant_sessions ADD COLUMN email TEXT NOT NULL DEFAULT '';
+	CREATE TABLE session_participants (
+		id           INTEGER PRIMARY KEY,
+		room_slug    TEXT NOT NULL,
+		session_id   TEXT NOT NULL DEFAULT '',
+		email        TEXT NOT NULL,
+		display_name TEXT NOT NULL,
+		moderator    INTEGER NOT NULL DEFAULT 0,
+		source       TEXT NOT NULL CHECK (source IN ('join','jaas')),
+		joined_at    INTEGER NOT NULL
+	);
+	CREATE INDEX session_participants_room ON session_participants(room_slug, joined_at);
+	CREATE UNIQUE INDEX session_participants_jaas ON session_participants(room_slug, session_id, email) WHERE source = 'jaas';
+	CREATE TABLE minutes_deliveries (
+		id              INTEGER PRIMARY KEY,
+		minutes_id      INTEGER NOT NULL REFERENCES minutes(id) ON DELETE CASCADE,
+		email           TEXT NOT NULL,
+		display_name    TEXT NOT NULL DEFAULT '',
+		status          TEXT NOT NULL CHECK (status IN ('queued','sent','failed')),
+		attempts        INTEGER NOT NULL DEFAULT 0,
+		next_attempt_at INTEGER NOT NULL,
+		approved_by     TEXT NOT NULL,
+		error           TEXT,
+		created_at      INTEGER NOT NULL,
+		sent_at         INTEGER,
+		UNIQUE (minutes_id, email)
+	);
+	CREATE INDEX minutes_deliveries_due ON minutes_deliveries(status, next_attempt_at);`,
 }
 
 func InitDB(path string) (*DB, error) {
@@ -241,6 +271,7 @@ func (db *DB) DeleteRoom(slug string) error {
 		"DELETE FROM transcriptions WHERE room_slug = ?",
 		"DELETE FROM minutes WHERE room_slug = ?",
 		"DELETE FROM participant_sessions WHERE room_slug = ?",
+		"DELETE FROM session_participants WHERE room_slug = ?",
 		"UPDATE webhook_events SET room_slug = NULL, session_id = NULL WHERE room_slug = ?",
 		"DELETE FROM rooms WHERE slug = ?",
 	} {

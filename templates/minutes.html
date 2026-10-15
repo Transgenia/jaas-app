@@ -38,6 +38,29 @@
 			{{if .R.Risks}}<ul>{{range .R.Risks}}<li>{{.}}</li>{{end}}</ul>{{else}}<p class="muted">Ninguno.</p>{{end}}
 			<h2>Preguntas abiertas</h2>
 			{{if .R.OpenQuestions}}<ul>{{range .R.OpenQuestions}}<li>{{.}}</li>{{end}}</ul>{{else}}<p class="muted">Ninguna.</p>{{end}}
+
+			<h2>Enviar a participantes</h2>
+			{{with .Sent}}<p class="notice">Envío aprobado: {{.}} correo(s) en cola. El estado se actualiza al recargar.</p>{{end}}
+			{{if not .MailEnabled}}<p class="muted">El envío de correo no está configurado en el servidor.</p>
+			{{else if not .Recipients}}<p class="muted">No hay participantes con correo registrados para esta reunión.</p>
+			{{else}}
+			<p class="muted">Cada persona recibe la minuta y la transcripción completa (adjunta). Revisa la minuta antes de enviar; las respuestas llegan a tu correo.</p>
+			<form method="POST" action="/admin/minutes/{{.M.ID}}/send">
+				<input type="hidden" name="csrf_token" value="{{.CSRF}}" />
+				<table>
+					<tr><th></th><th>Participante</th><th>Correo</th><th>Origen</th><th>Estado</th></tr>
+					{{range .Recipients}}
+					<tr>
+						<td>{{if not .Status}}<input type="checkbox" name="recipient" value="{{.Email}}" checked />{{end}}</td>
+						<td>{{.Name}}</td><td>{{.Email}}</td>
+						<td>{{if .InSession}}<span class="badge ok">en la sesión</span>{{else}}<span class="badge warn">entró por el enlace</span>{{end}}</td>
+						<td>{{if eq .Status "sent"}}<span class="badge ok">enviado</span>{{else if eq .Status "queued"}}<span class="badge warn">en cola</span>{{else if eq .Status "failed"}}<span class="badge bad">falló</span> <span class="muted">{{.Error}}</span>{{else}}—{{end}}</td>
+					</tr>
+					{{end}}
+				</table>
+				<p style="margin-top:.75rem"><button type="submit">Enviar transcripción y minuta</button></p>
+			</form>
+			{{end}}
 			{{else if eq .M.Status "failed"}}
 			<p class="error">No se pudo generar la minuta (intento {{.M.Attempts}}): {{.M.Error}}</p>
 			<form method="POST" action="/admin/minutes/{{.M.ID}}/retry">

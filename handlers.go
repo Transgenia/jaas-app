@@ -88,6 +88,7 @@ func (app *App) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("GET /admin/minutes/{id}", cf(admin(app.handleViewMinutes)))
 	mux.Handle("GET /admin/minutes/{id}/download", cf(admin(app.handleDownloadMinutes)))
 	mux.Handle("POST /admin/minutes/{id}/retry", cf(admin(app.handleRetryMinutes)))
+	mux.Handle("POST /admin/minutes/{id}/send", cf(admin(app.handleSendMinutes)))
 
 	mux.HandleFunc("GET /m/{slug}", app.handleMeeting)
 	mux.HandleFunc("POST /m/{slug}/join", app.handleJoinMeeting)
@@ -544,7 +545,7 @@ func (app *App) handleAdminStart(w http.ResponseWriter, r *http.Request) {
 	if name == "" {
 		name = "Anfitrión"
 	}
-	if err := app.startParticipant(w, room.Slug, name, true); err != nil {
+	if err := app.startParticipant(w, room.Slug, name, adminFrom(r).Email, true); err != nil {
 		app.serverError(w, "admin start", err)
 		return
 	}
@@ -586,14 +587,17 @@ func cleanDisplayName(s string) string {
 	return strings.TrimSpace(s)
 }
 
-func (app *App) startParticipant(w http.ResponseWriter, slug, name string, moderator bool) error {
+func (app *App) startParticipant(w http.ResponseWriter, slug, name, email string, moderator bool) error {
 	if moderator {
 		if err := app.DB.SetRoomActive(slug, true); err != nil {
 			return err
 		}
 	}
-	token, err := app.DB.CreateParticipantSession(slug, name, moderator)
+	token, err := app.DB.CreateParticipantSession(slug, name, email, moderator)
 	if err != nil {
+		return err
+	}
+	if err := app.DB.RecordJoin(slug, email, name, moderator); err != nil {
 		return err
 	}
 	app.setCookie(w, "tgm_part", token, participantLifetime)
@@ -612,7 +616,7 @@ func (app *App) handleMeeting(w http.ResponseWriter, r *http.Request) {
 			app.DB.SetRoomActive(room.Slug, true)
 		}
 		jwt, err := GenerateJWT(app.Config.JaaSKey, app.Config.JaaSAppID, app.Config.JaaSKeyID,
-			room.Slug, p.DisplayName, p.Moderator, room.Transcription)
+			room.Slug, p.DisplayName, p.Email, p.Moderator, room.Transcription)
 		if err != nil {
 			app.serverError(w, "jwt", err)
 			return
@@ -641,10 +645,23 @@ func (app *App) handleJoinMeeting(w http.ResponseWriter, r *http.Request) {
 	}
 	formToken := app.formToken(w, r)
 	name := cleanDisplayName(r.PostFormValue("display_name"))
-	if name == "" {
-		app.render(w, http.StatusBadRequest, "join.html", map[string]any{
-			"Slug": room.Slug, "FormToken": formToken, "Error": "Escribe tu nombre.",
-		})
+	email := normalizeEmail(r.PostFormValue("email"))
+	form := func(extra map[string]any) map[string]any {
+		data := map[string]any{"Slug": room.Slug, "FormToken": formToken, "Name": name, "Email": r.PostFormValue("email")}
+		for k, v := range extra {
+			data[k] = v
+		}
+		return data
+	}
+	switch {
+	case name == "":
+		app.render(w, http.StatusBadRequest, "join.html", form(map[string]any{"Error": "Escribe tu nombre."}))
+		return
+	case email == "":
+		app.render(w, http.StatusBadRequest, "join.html", form(map[string]any{"Error": "Escribe un correo válido: ahí recibirás la transcripción y la minuta."}))
+		return
+	case r.PostFormValue("consent") != "on":
+		app.render(w, http.StatusBadRequest, "join.html", form(map[string]any{"Error": "Para entrar debes aceptar el aviso de transcripción y envío por correo."}))
 		return
 	}
 
@@ -653,22 +670,18 @@ func (app *App) handleJoinMeeting(w http.ResponseWriter, r *http.Request) {
 		ipKey, roomKey := ip+"|"+room.Slug, room.Slug
 		if app.hostLimiter.Blocked(ipKey) || app.hostRoomLimiter.Blocked(roomKey) {
 			slog.Warn("join: host password rate limited", "room", room.Slug, "ip", ip)
-			app.render(w, http.StatusTooManyRequests, "join.html", map[string]any{
-				"Slug": room.Slug, "FormToken": formToken, "Error": "Demasiados intentos. Espera 15 minutos.", "HostOpen": true,
-			})
+			app.render(w, http.StatusTooManyRequests, "join.html", form(map[string]any{"Error": "Demasiados intentos. Espera 15 minutos.", "HostOpen": true}))
 			return
 		}
 		if bcrypt.CompareHashAndPassword([]byte(room.HostHash), []byte(hostPassword)) != nil {
 			app.hostLimiter.Fail(ipKey)
 			app.hostRoomLimiter.Fail(roomKey)
 			slog.Warn("join: wrong host password", "room", room.Slug, "ip", ip)
-			app.render(w, http.StatusUnauthorized, "join.html", map[string]any{
-				"Slug": room.Slug, "FormToken": formToken, "Error": "Contraseña de anfitrión incorrecta.", "HostOpen": true,
-			})
+			app.render(w, http.StatusUnauthorized, "join.html", form(map[string]any{"Error": "Contraseña de anfitrión incorrecta.", "HostOpen": true}))
 			return
 		}
 		app.hostLimiter.Reset(ipKey)
-		if err := app.startParticipant(w, room.Slug, name, true); err != nil {
+		if err := app.startParticipant(w, room.Slug, name, email, true); err != nil {
 			app.serverError(w, "join host", err)
 			return
 		}
@@ -679,11 +692,11 @@ func (app *App) handleJoinMeeting(w http.ResponseWriter, r *http.Request) {
 
 	if !room.Active {
 		app.render(w, http.StatusOK, "waiting.html", map[string]any{
-			"Slug": room.Slug, "DisplayName": name, "FormToken": formToken,
+			"Slug": room.Slug, "DisplayName": name, "Email": email, "FormToken": formToken,
 		})
 		return
 	}
-	if err := app.startParticipant(w, room.Slug, name, false); err != nil {
+	if err := app.startParticipant(w, room.Slug, name, email, false); err != nil {
 		app.serverError(w, "join guest", err)
 		return
 	}
@@ -787,8 +800,17 @@ func (app *App) handleViewMinutes(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	var recipients []Recipient
+	if res != nil {
+		var err error
+		if recipients, err = app.DB.ProposedRecipients(m); err != nil {
+			app.serverError(w, "recipients", err)
+			return
+		}
+	}
 	app.render(w, http.StatusOK, "minutes.html", map[string]any{
 		"M": m, "R": res, "CSRF": adminFrom(r).CSRFToken, "TZ": app.Config.DisplayTimezone.String(),
+		"Recipients": recipients, "MailEnabled": app.Mailer != nil, "Sent": r.URL.Query().Get("enviado"),
 	})
 }
 
@@ -817,6 +839,58 @@ func (app *App) handleDownloadMinutes(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
 	w.Header().Set("Content-Disposition", `attachment; filename="`+base+`.md"`)
 	w.Write([]byte(minutesMarkdown(m, res, app.Config.DisplayTimezone)))
+}
+
+// handleSendMinutes queues the host-approved deliveries. Only addresses from
+// the proposed list (people who took part in this session) can be chosen.
+func (app *App) handleSendMinutes(w http.ResponseWriter, r *http.Request) {
+	if app.Mailer == nil {
+		http.Error(w, "El envío de correo no está configurado.", http.StatusServiceUnavailable)
+		return
+	}
+	m, res, ok := app.loadMinutes(w, r)
+	if !ok {
+		return
+	}
+	if res == nil {
+		http.Error(w, "La minuta aún no está lista.", http.StatusConflict)
+		return
+	}
+	proposed, err := app.DB.ProposedRecipients(m)
+	if err != nil {
+		app.serverError(w, "recipients", err)
+		return
+	}
+	allowed := map[string]Recipient{}
+	for _, p := range proposed {
+		allowed[p.Email] = p
+	}
+	r.ParseForm()
+	var chosen []Recipient
+	for _, raw := range r.PostForm["recipient"] {
+		p, ok := allowed[normalizeEmail(raw)]
+		if !ok {
+			http.Error(w, "Destinatario fuera de la lista de participantes.", http.StatusBadRequest)
+			return
+		}
+		chosen = append(chosen, p)
+	}
+	if len(chosen) == 0 {
+		http.Redirect(w, r, "/admin/minutes/"+strconv.FormatInt(m.ID, 10), http.StatusSeeOther)
+		return
+	}
+	approver := adminFrom(r).Email
+	if approver == "" {
+		approver = "admin"
+	}
+	n, err := app.DB.QueueDeliveries(m.ID, chosen, approver)
+	if err != nil {
+		app.serverError(w, "queue deliveries", err)
+		return
+	}
+	slog.Info("admin: minutes delivery approved", "minutes", m.ID, "queued", n, "user", adminFrom(r).Email)
+	app.wakeWorker()
+	http.Redirect(w, r, "/admin/minutes/"+strconv.FormatInt(m.ID, 10)+"?enviado="+strconv.Itoa(n), http.StatusSeeOther)
 }
 
 func (app *App) handleRetryMinutes(w http.ResponseWriter, r *http.Request) {

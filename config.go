@@ -60,6 +60,16 @@ type Config struct {
 	// Cloudflare Access only sees the rooms they created.
 	AdminEmails []string
 
+	// Outgoing mail for host-approved deliveries of transcripts and minutes.
+	// Empty SMTPHost disables sending.
+	SMTPHost     string
+	SMTPPort     int
+	SMTPSecurity string // starttls | tls
+	SMTPUser     string
+	SMTPPassword string
+	MailFrom     string
+	MailFromName string
+
 	// SecureCookies is false only for local development over plain HTTP.
 	SecureCookies bool
 }
@@ -254,6 +264,24 @@ func LoadConfig() (*Config, error) {
 	}
 	if cfg.DisplayTimezone, err = time.LoadLocation(envDefault("DISPLAY_TIMEZONE", "America/Mexico_City")); err != nil {
 		return nil, fmt.Errorf("DISPLAY_TIMEZONE: %w", err)
+	}
+
+	if cfg.SMTPHost = strings.TrimSpace(os.Getenv("SMTP_HOST")); cfg.SMTPHost != "" {
+		if cfg.SMTPPort, err = envInt("SMTP_PORT", 587); err != nil {
+			return nil, err
+		}
+		cfg.SMTPSecurity = envDefault("SMTP_SECURITY", "starttls")
+		if cfg.SMTPSecurity != "starttls" && cfg.SMTPSecurity != "tls" {
+			return nil, fmt.Errorf("SMTP_SECURITY must be starttls or tls")
+		}
+		cfg.SMTPUser = strings.TrimSpace(os.Getenv("SMTP_USER"))
+		if cfg.SMTPPassword, err = readSecret("SMTP_PASSWORD"); err != nil {
+			return nil, err
+		}
+		if cfg.MailFrom = normalizeEmail(os.Getenv("MAIL_FROM")); cfg.MailFrom == "" {
+			return nil, fmt.Errorf("MAIL_FROM must be a valid address when SMTP_HOST is set")
+		}
+		cfg.MailFromName = envDefault("MAIL_FROM_NAME", "Transgenia Reuniones")
 	}
 
 	if (cfg.CFAccessTeamDomain == "") != (cfg.CFAccessAUD == "") {

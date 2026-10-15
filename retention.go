@@ -73,7 +73,12 @@ func (db *DB) PurgeExpired(transcripts, minutes Retention) (map[string]int64, er
 			name string
 			q    string
 			args []any
-		}{"transcriptions", "DELETE FROM transcriptions WHERE created_at < ?", []any{cutoff.Unix()}})
+		}{"transcriptions", "DELETE FROM transcriptions WHERE created_at < ?", []any{cutoff.Unix()}},
+			struct {
+				name string
+				q    string
+				args []any
+			}{"session_participants", "DELETE FROM session_participants WHERE joined_at < ?", []any{cutoff.Unix()}})
 	}
 	if cutoff, ok := minutes.Cutoff(now); ok {
 		steps = append(steps, struct {

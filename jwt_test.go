@@ -21,7 +21,7 @@ func TestGenerateGuestJWT(t *testing.T) {
 	key := testKey(t)
 	appID := "vpaas-magic-cookie-test123"
 	keyID := "vpaas-magic-cookie-test123/mykey"
-	tokenStr, err := GenerateJWT(key, appID, keyID, "weekly-sync", "Alice", false, false)
+	tokenStr, err := GenerateJWT(key, appID, keyID, "weekly-sync", "Alice", "alice@example.com", false, false)
 	if err != nil {
 		t.Fatalf("generate: %v", err)
 	}
@@ -68,7 +68,7 @@ func TestGenerateModeratorJWT(t *testing.T) {
 	key := testKey(t)
 	appID := "vpaas-magic-cookie-test123"
 	keyID := "vpaas-magic-cookie-test123/mykey"
-	tokenStr, err := GenerateJWT(key, appID, keyID, "weekly-sync", "Bob", true, true)
+	tokenStr, err := GenerateJWT(key, appID, keyID, "weekly-sync", "Bob", "bob@example.com", true, true)
 	if err != nil {
 		t.Fatalf("generate: %v", err)
 	}

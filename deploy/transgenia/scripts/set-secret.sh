@@ -15,9 +15,9 @@ BASE=/opt/transgenia-meetings
 GROUP=tgn-meetings
 name=${1:-}
 case "$name" in
-jaas_private_key | jaas_webhook_secret | openai_api_key | admin_initial_password) ;;
+jaas_private_key | jaas_webhook_secret | openai_api_key | admin_initial_password | smtp_password) ;;
 *)
-	echo "usage: $0 {jaas_private_key|jaas_webhook_secret|openai_api_key|admin_initial_password} [< file]" >&2
+	echo "usage: $0 {jaas_private_key|jaas_webhook_secret|openai_api_key|admin_initial_password|smtp_password} [< file]" >&2
 	exit 2
 	;;
 esac

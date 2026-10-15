@@ -235,7 +235,7 @@ func TestPasswordFieldsAreMasked(t *testing.T) {
 	}
 	guest := e.browser()
 	tok := hidden(t, guest.do(http.MethodGet, "/m/sala-prueba", nil).Body.String(), "form_token")
-	pages["waiting"] = guest.do(http.MethodPost, "/m/sala-prueba/join", url.Values{"form_token": {tok}, "display_name": {"Invitada"}}).Body.String()
+	pages["waiting"] = guest.do(http.MethodPost, "/m/sala-prueba/join", url.Values{"form_token": {tok}, "display_name": {"Invitada"}, "email": {"invitada@cliente.example"}, "consent": {"on"}}).Body.String()
 	input := regexp.MustCompile(`<input[^>]*name="host_password"[^>]*>`)
 	for name, html := range pages {
 		found := input.FindAllString(html, -1)
@@ -274,7 +274,7 @@ func TestMeetingFlowKeepsJWTOutOfURLs(t *testing.T) {
 
 	guest := e.browser()
 	tok := hidden(t, guest.do(http.MethodGet, "/m/sala-prueba", nil).Body.String(), "form_token")
-	rr := guest.do(http.MethodPost, "/m/sala-prueba/join", url.Values{"form_token": {tok}, "display_name": {"Invitada"}})
+	rr := guest.do(http.MethodPost, "/m/sala-prueba/join", url.Values{"form_token": {tok}, "display_name": {"Invitada"}, "email": {"invitada@cliente.example"}, "consent": {"on"}})
 	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), "Esperando") {
 		t.Fatalf("guest before host should wait: %d", rr.Code)
 	}
@@ -282,7 +282,7 @@ func TestMeetingFlowKeepsJWTOutOfURLs(t *testing.T) {
 	host := e.browser()
 	host.ip = "198.51.100.20"
 	tok = hidden(t, host.do(http.MethodGet, "/m/sala-prueba", nil).Body.String(), "form_token")
-	rr = host.do(http.MethodPost, "/m/sala-prueba/join", url.Values{"form_token": {tok}, "display_name": {"Saurat"}, "host_password": {"anfitrion-secreto"}})
+	rr = host.do(http.MethodPost, "/m/sala-prueba/join", url.Values{"form_token": {tok}, "display_name": {"Saurat"}, "email": {"saurat@cliente.example"}, "consent": {"on"}, "host_password": {"anfitrion-secreto"}})
 	if rr.Code != http.StatusSeeOther || rr.Header().Get("Location") != "/m/sala-prueba" {
 		t.Fatalf("host join: %d %s", rr.Code, rr.Header().Get("Location"))
 	}
@@ -298,7 +298,7 @@ func TestMeetingFlowKeepsJWTOutOfURLs(t *testing.T) {
 	}
 
 	tok = hidden(t, guest.do(http.MethodGet, "/m/sala-prueba", nil).Body.String(), "form_token")
-	rr = guest.do(http.MethodPost, "/m/sala-prueba/join", url.Values{"form_token": {tok}, "display_name": {"Invitada"}})
+	rr = guest.do(http.MethodPost, "/m/sala-prueba/join", url.Values{"form_token": {tok}, "display_name": {"Invitada"}, "email": {"invitada@cliente.example"}, "consent": {"on"}})
 	if rr.Code != http.StatusSeeOther {
 		t.Fatalf("guest join after host: %d", rr.Code)
 	}
@@ -319,11 +319,11 @@ func TestHostPasswordRateLimit(t *testing.T) {
 	g := e.browser()
 	tok := hidden(t, g.do(http.MethodGet, "/m/sala-prueba", nil).Body.String(), "form_token")
 	for i := 0; i < 5; i++ {
-		if rr := g.do(http.MethodPost, "/m/sala-prueba/join", url.Values{"form_token": {tok}, "display_name": {"X"}, "host_password": {"mala"}}); rr.Code != http.StatusUnauthorized {
+		if rr := g.do(http.MethodPost, "/m/sala-prueba/join", url.Values{"form_token": {tok}, "display_name": {"X"}, "email": {"x@cliente.example"}, "consent": {"on"}, "host_password": {"mala"}}); rr.Code != http.StatusUnauthorized {
 			t.Fatalf("attempt %d: %d", i, rr.Code)
 		}
 	}
-	if rr := g.do(http.MethodPost, "/m/sala-prueba/join", url.Values{"form_token": {tok}, "display_name": {"X"}, "host_password": {"anfitrion-secreto"}}); rr.Code != http.StatusTooManyRequests {
+	if rr := g.do(http.MethodPost, "/m/sala-prueba/join", url.Values{"form_token": {tok}, "display_name": {"X"}, "email": {"x@cliente.example"}, "consent": {"on"}, "host_password": {"anfitrion-secreto"}}); rr.Code != http.StatusTooManyRequests {
 		t.Fatalf("not rate limited: %d", rr.Code)
 	}
 }
@@ -341,7 +341,7 @@ func TestEndMeetingRequiresModeratorSession(t *testing.T) {
 	}
 	guest := e.browser()
 	tok := hidden(t, guest.do(http.MethodGet, "/m/sala-prueba", nil).Body.String(), "form_token")
-	guest.do(http.MethodPost, "/m/sala-prueba/join", url.Values{"form_token": {tok}, "display_name": {"Invitada"}})
+	guest.do(http.MethodPost, "/m/sala-prueba/join", url.Values{"form_token": {tok}, "display_name": {"Invitada"}, "email": {"invitada@cliente.example"}, "consent": {"on"}})
 	if !strings.Contains(guest.do(http.MethodGet, "/m/sala-prueba", nil).Body.String(), `data-csrf=""`) {
 		t.Fatal("guest page exposes an end-meeting token")
 	}
@@ -350,7 +350,7 @@ func TestEndMeetingRequiresModeratorSession(t *testing.T) {
 	}
 
 	host := e.browser()
-	rr := b.do(http.MethodPost, "/admin/rooms/sala-prueba/start", url.Values{"csrf_token": {csrf}, "display_name": {"Anfitrión"}})
+	rr := b.do(http.MethodPost, "/admin/rooms/sala-prueba/start", url.Values{"csrf_token": {csrf}, "display_name": {"Anfitrión"}, "email": {"anfitrion@cliente.example"}, "consent": {"on"}})
 	if rr.Code != http.StatusSeeOther || strings.Contains(rr.Header().Get("Location"), "jwt") {
 		t.Fatalf("admin start: %d %s", rr.Code, rr.Header().Get("Location"))
 	}
@@ -376,7 +376,7 @@ func TestDeleteRoomRemovesRelatedData(t *testing.T) {
 	}
 	for e.app.processOne(context.Background()) {
 	}
-	e.app.DB.CreateParticipantSession("sala-borrar", "X", false)
+	e.app.DB.CreateParticipantSession("sala-borrar", "X", "x@cliente.example", false)
 
 	if rr := b.do(http.MethodPost, "/admin/rooms/sala-borrar/delete", url.Values{"csrf_token": {csrf}}); rr.Code != http.StatusSeeOther {
 		t.Fatalf("delete: %d", rr.Code)

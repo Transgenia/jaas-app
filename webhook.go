@@ -226,6 +226,9 @@ type jaasWebhook struct {
 		PreAuthenticatedLink string `json:"preAuthenticatedLink"`
 		DurationSec          int    `json:"durationSec"`
 		LinkExpiration       int64  `json:"linkExpiration"`
+		Name                 string `json:"name"`
+		Email                string `json:"email"`
+		Moderator            bool   `json:"moderator"`
 	} `json:"data"`
 }
 
@@ -353,6 +356,23 @@ func (app *App) applyWebhook(ev *jaasWebhook, slug string) error {
 			return err
 		}
 		slog.Info("webhook: recording", "room", slug, "session", ev.SessionID)
+		return nil
+
+	case "PARTICIPANT_JOINED":
+		// The e-mail is the one we put in the participant's JWT.
+		email := normalizeEmail(ev.Data.Email)
+		if email == "" || ev.SessionID == "" {
+			slog.Info("webhook: participant without e-mail", "room", slug)
+			return nil
+		}
+		at := app.now()
+		if ev.Timestamp > 0 {
+			at = time.UnixMilli(ev.Timestamp)
+		}
+		if err := app.DB.RecordJaaSParticipant(slug, ev.SessionID, email, cleanDisplayName(ev.Data.Name), ev.Data.Moderator, at); err != nil {
+			return err
+		}
+		slog.Info("webhook: participant", "room", slug, "session", ev.SessionID)
 		return nil
 
 	default:
