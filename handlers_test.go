@@ -468,3 +468,26 @@ func TestServerHasTimeouts(t *testing.T) {
 		}
 	}
 }
+
+func TestStaticAssetsAreVersioned(t *testing.T) {
+	e := newTestEnv(t)
+	page := e.browser().do(http.MethodGet, "/", nil).Body.String()
+	m := regexp.MustCompile(`/static/app\.css\?v=([0-9a-f]{12})`).FindStringSubmatch(page)
+	if m == nil || m[1] != assetVersions["app.css"] {
+		t.Fatalf("app.css not versioned in page")
+	}
+	rr := e.browser().do(http.MethodGet, "/static/app.css?v="+m[1], nil)
+	if rr.Code != http.StatusOK || !strings.Contains(rr.Header().Get("Cache-Control"), "immutable") {
+		t.Fatalf("current version: %d %s", rr.Code, rr.Header().Get("Cache-Control"))
+	}
+	for _, p := range []string{"/static/app.css", "/static/app.css?v=000000000000"} {
+		if cc := e.browser().do(http.MethodGet, p, nil).Header().Get("Cache-Control"); cc != "public, max-age=60" {
+			t.Errorf("%s: %s", p, cc)
+		}
+	}
+	for _, name := range []string{"meeting.js", "join.js", "dashboard.js", "logo.svg"} {
+		if assetVersions[name] == "" {
+			t.Errorf("no version for %s", name)
+		}
+	}
+}

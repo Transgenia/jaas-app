@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"embed"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"html/template"
@@ -23,8 +25,46 @@ var templateFS embed.FS
 //go:embed static/*
 var staticFS embed.FS
 
+// assetVersions maps each embedded static file to a short content hash.
+// Pages reference /static/<file>?v=<hash>, so a deploy changes the URL of
+// every changed asset and the CDN never serves a stale script or stylesheet.
+var assetVersions = func() map[string]string {
+	out := map[string]string{}
+	entries, _ := staticFS.ReadDir("static")
+	for _, e := range entries {
+		b, err := staticFS.ReadFile("static/" + e.Name())
+		if err != nil {
+			continue
+		}
+		sum := sha256.Sum256(b)
+		out[e.Name()] = hex.EncodeToString(sum[:])[:12]
+	}
+	return out
+}()
+
+func assetURL(name string) string {
+	return "/static/" + name + "?v=" + assetVersions[name]
+}
+
+// staticHandler: the current versioned URL is cacheable for a year; any
+// other request (unversioned or an old version) is cached briefly only.
+func staticHandler() http.Handler {
+	fs := http.FileServer(http.FS(staticFS))
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		name := strings.TrimPrefix(r.URL.Path, "/static/")
+		if v := r.URL.Query().Get("v"); v != "" && v == assetVersions[name] {
+			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		} else {
+			w.Header().Set("Cache-Control", "public, max-age=60")
+		}
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		fs.ServeHTTP(w, r)
+	})
+}
+
 func (app *App) templateFuncs() template.FuncMap {
 	return template.FuncMap{
+		"asset":   assetURL,
 		"version": func() string { return version },
 		"local": func(t time.Time) string {
 			if t.IsZero() {
@@ -69,7 +109,7 @@ func (app *App) RegisterRoutes(mux *http.ServeMux) {
 	adminPw := func(h http.HandlerFunc) http.Handler { return app.requireAdmin(h, true) }
 	cf := app.requireCFAccess
 
-	mux.Handle("GET /static/", http.FileServer(http.FS(staticFS)))
+	mux.Handle("GET /static/", staticHandler())
 	mux.HandleFunc("GET /healthz", app.handleHealth)
 	mux.HandleFunc("GET /{$}", app.handleHome)
 

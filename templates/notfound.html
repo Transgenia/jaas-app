@@ -5,12 +5,12 @@
 	<meta name="viewport" content="width=device-width, initial-scale=1" />
 	<meta name="robots" content="noindex, nofollow" />
 	<title>Sala no encontrada · Transgenia</title>
-	<link rel="stylesheet" href="/static/app.css" />
+	<link rel="stylesheet" href="{{asset "app.css"}}" />
 </head>
 <body>
 	<div class="center">
 		<div class="card">
-			<img class="logo" src="/static/logo.svg" alt="Transgenia" />
+			<img class="logo" src="{{asset "logo.svg"}}" alt="Transgenia" />
 			<h1>Sala no encontrada</h1>
 			<p class="sub">{{with .}}{{with .Slug}}La sala <code>{{.}}</code> no existe. {{end}}{{end}}Revisa el enlace que te compartieron.</p>
 		</div>

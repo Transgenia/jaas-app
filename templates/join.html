@@ -5,13 +5,13 @@
 	<meta name="viewport" content="width=device-width, initial-scale=1" />
 	<meta name="robots" content="noindex, nofollow" />
 	<title>{{.Slug}} · Reuniones Transgenia</title>
-	<link rel="stylesheet" href="/static/app.css" />
-	<script src="/static/join.js" defer></script>
+	<link rel="stylesheet" href="{{asset "app.css"}}" />
+	<script src="{{asset "join.js"}}" defer></script>
 </head>
 <body>
 	<div class="center">
 		<div class="card">
-			<img class="logo" src="/static/logo.svg" alt="Transgenia" />
+			<img class="logo" src="{{asset "logo.svg"}}" alt="Transgenia" />
 			<h1>{{.Slug}}</h1>
 			<p class="sub">Escribe tu nombre para entrar a la reunión.</p>
 			{{with .Error}}<p class="error">{{.}}</p>{{end}}

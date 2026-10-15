@@ -5,9 +5,9 @@
 	<meta name="viewport" content="width=device-width, initial-scale=1" />
 	<meta name="robots" content="noindex, nofollow" />
 	<title>{{.Slug}} · Reunión</title>
-	<link rel="stylesheet" href="/static/app.css" />
+	<link rel="stylesheet" href="{{asset "app.css"}}" />
 	<script src="https://8x8.vc/{{.AppID}}/external_api.js"></script>
-	<script src="/static/meeting.js" defer></script>
+	<script src="{{asset "meeting.js"}}" defer></script>
 </head>
 <body class="meeting">
 	<div id="meet" data-app-id="{{.AppID}}" data-room="{{.Slug}}" data-jwt="{{.JWT}}" data-name="{{.DisplayName}}"

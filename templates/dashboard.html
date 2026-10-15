@@ -5,13 +5,13 @@
 	<meta name="viewport" content="width=device-width, initial-scale=1" />
 	<meta name="robots" content="noindex, nofollow" />
 	<title>Panel · Reuniones Transgenia</title>
-	<link rel="stylesheet" href="/static/app.css" />
-	<script src="/static/dashboard.js" defer></script>
+	<link rel="stylesheet" href="{{asset "app.css"}}" />
+	<script src="{{asset "dashboard.js"}}" defer></script>
 </head>
 <body>
 	<div class="page">
 		<div class="top">
-			<div class="brand"><img src="/static/logo.svg" alt="Transgenia" /><h1>Reuniones</h1></div>
+			<div class="brand"><img src="{{asset "logo.svg"}}" alt="Transgenia" /><h1>Reuniones</h1></div>
 			<div class="row">
 				{{with .Email}}<span class="muted">{{.}}{{if $.Superadmin}} · administrador{{end}}</span>{{end}}
 				{{if not .IdentityMode}}<a class="btn secondary" href="/admin/password">Cambiar contraseña</a>{{end}}

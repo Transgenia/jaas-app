@@ -5,12 +5,12 @@
 	<meta name="viewport" content="width=device-width, initial-scale=1" />
 	<meta name="robots" content="noindex, nofollow" />
 	<title>Acceso · Reuniones Transgenia</title>
-	<link rel="stylesheet" href="/static/app.css" />
+	<link rel="stylesheet" href="{{asset "app.css"}}" />
 </head>
 <body>
 	<div class="center">
 		<div class="card">
-			<img class="logo" src="/static/logo.svg" alt="Transgenia" />
+			<img class="logo" src="{{asset "logo.svg"}}" alt="Transgenia" />
 			<h1>Panel de reuniones</h1>
 			<p class="sub">Acceso de administración.</p>
 			{{with .Error}}<p class="error">{{.}}</p>{{end}}
