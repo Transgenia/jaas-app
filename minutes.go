@@ -95,13 +95,31 @@ func (db *DB) ClaimNextMinutes(lease time.Duration) (*minutesJob, error) {
 	return &j, nil
 }
 
-func (db *DB) CompleteMinutes(id int64, resultJSON, model string) error {
-	_, err := db.conn.Exec(
+// CompleteMinutes stores the draft and, in the same transaction, queues the
+// "minutes ready" notice for notify (the room owner), so a crash cannot lose
+// it and a re-run never queues it twice.
+func (db *DB) CompleteMinutes(id int64, resultJSON, model string, notify []string) error {
+	tx, err := db.conn.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	now := db.unix()
+	if _, err := tx.Exec(
 		`UPDATE minutes SET status = 'ready', result_json = ?, model = ?, error = NULL, source_url = NULL,
 		 locked_until = NULL, updated_at = ? WHERE id = ?`,
-		resultJSON, model, db.unix(), id,
-	)
-	return err
+		resultJSON, model, now, id,
+	); err != nil {
+		return err
+	}
+	for _, email := range notify {
+		if _, err := tx.Exec(
+			`INSERT INTO host_notifications (minutes_id, email, status, next_attempt_at) VALUES (?, ?, 'queued', ?)
+			 ON CONFLICT (minutes_id, email) DO NOTHING`, id, email, now); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func (db *DB) RetryMinutesLater(id int64, msg string, delay time.Duration) error {
@@ -588,7 +606,7 @@ func (app *App) runWorker(ctx context.Context) {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 	for {
-		for app.processOne(ctx) || app.processDelivery(ctx) {
+		for app.processOne(ctx) || app.processHostNotification(ctx) || app.processDelivery(ctx) {
 			if ctx.Err() != nil {
 				return
 			}
@@ -615,7 +633,7 @@ func (app *App) processOne(ctx context.Context) bool {
 	start := time.Now()
 	raw, model, err := app.buildMinutes(ctx, job)
 	if err == nil {
-		err = app.DB.CompleteMinutes(job.ID, string(raw), model)
+		err = app.DB.CompleteMinutes(job.ID, string(raw), model, app.minutesOwners(job.RoomSlug))
 	}
 	switch {
 	case err == nil:
@@ -631,6 +649,23 @@ func (app *App) processOne(ctx context.Context) bool {
 		app.DB.RetryMinutesLater(job.ID, err.Error(), delay)
 	}
 	return true
+}
+
+// minutesOwners: who is told that a room's minutes are ready. The owner (an
+// Access identity of the team); rooms without owner go to ADMIN_EMAILS.
+func (app *App) minutesOwners(slug string) []string {
+	if room, err := app.DB.GetRoom(slug); err == nil {
+		if owner := normalizeEmail(room.OwnerEmail); owner != "" {
+			return []string{owner}
+		}
+	}
+	var admins []string
+	for _, a := range app.Config.AdminEmails {
+		if e := normalizeEmail(a); e != "" {
+			admins = append(admins, e)
+		}
+	}
+	return admins
 }
 
 func (app *App) buildMinutes(ctx context.Context, job *minutesJob) ([]byte, string, error) {

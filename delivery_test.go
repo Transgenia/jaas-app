@@ -24,6 +24,31 @@ type fakeMailer struct {
 	err  error
 }
 
+// copies returns the participant deliveries (not the host notices).
+func (f *fakeMailer) copies() []*Mail {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []*Mail
+	for _, m := range f.sent {
+		if strings.HasPrefix(m.Subject, "Transcripción y minuta") {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+func (f *fakeMailer) notices() []*Mail {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []*Mail
+	for _, m := range f.sent {
+		if strings.HasPrefix(m.Subject, "Minuta lista para revisar") {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
 func (f *fakeMailer) Send(_ context.Context, m *Mail) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -143,7 +168,7 @@ func TestSendRequiresApprovalOwnershipAndList(t *testing.T) {
 	}
 	// Nothing goes out without the host's approval.
 	drain(a.testEnv)
-	if len(fm.sent) != 0 {
+	if len(fm.copies()) != 0 {
 		t.Fatal("e-mail sent without approval")
 	}
 	// CSRF, ownership and the recipient list are enforced.
@@ -158,7 +183,7 @@ func TestSendRequiresApprovalOwnershipAndList(t *testing.T) {
 		t.Errorf("address outside the list: %d", rr.Code)
 	}
 	drain(a.testEnv)
-	if len(fm.sent) != 0 {
+	if len(fm.copies()) != 0 {
 		t.Fatal("rejected requests sent mail")
 	}
 
@@ -168,10 +193,10 @@ func TestSendRequiresApprovalOwnershipAndList(t *testing.T) {
 		t.Fatalf("send: %d", rr.Code)
 	}
 	drain(a.testEnv)
-	if len(fm.sent) != 2 {
-		t.Fatalf("sent %d mails", len(fm.sent))
+	if len(fm.copies()) != 2 {
+		t.Fatalf("sent %d copies", len(fm.copies()))
 	}
-	for _, mail := range fm.sent {
+	for _, mail := range fm.copies() {
 		if mail.ReplyTo != "alice@transgenia.org" || !strings.Contains(mail.Subject, "alice-cliente-2026") {
 			t.Errorf("headers: to=%s reply=%s subject=%s", mail.To, mail.ReplyTo, mail.Subject)
 		}
@@ -186,8 +211,8 @@ func TestSendRequiresApprovalOwnershipAndList(t *testing.T) {
 	// Approving again never duplicates.
 	alice.do(http.MethodPost, "/admin/minutes/"+id+"/send", url.Values{"csrf_token": {csrf}, "recipient": {"ana@cliente.example"}})
 	drain(a.testEnv)
-	if len(fm.sent) != 2 {
-		t.Fatalf("duplicate delivery: %d mails", len(fm.sent))
+	if len(fm.copies()) != 2 {
+		t.Fatalf("duplicate delivery: %d copies", len(fm.copies()))
 	}
 	page = alice.do(http.MethodGet, "/admin/minutes/"+id, nil).Body.String()
 	if strings.Count(page, `badge ok">enviado`) != 2 {
@@ -282,5 +307,85 @@ func TestBuildMIME(t *testing.T) {
 		if err := s.Send(context.Background(), &Mail{To: bad}); err == nil || !isPermanent(err) {
 			t.Errorf("address %q accepted", bad)
 		}
+	}
+}
+
+func TestHostNoticeWhenMinutesReady(t *testing.T) {
+	a, _, _, m, fm := meetingWithParticipants(t)
+	notices := fm.notices()
+	if len(notices) != 1 {
+		t.Fatalf("host notices: %d", len(notices))
+	}
+	n := notices[0]
+	link := testOrigin + "/admin/minutes/" + strconv.FormatInt(m.ID, 10)
+	if n.To != "alice@transgenia.org" || !strings.Contains(n.Text, link) || !strings.Contains(n.Subject, "alice-cliente-2026") {
+		t.Fatalf("notice: to=%s subject=%s", n.To, n.Subject)
+	}
+	if !strings.Contains(n.Text, "Hay 3 participantes propuestos") {
+		t.Errorf("participant count missing: %q", n.Text)
+	}
+	// No meeting content before approval: no summary, transcript or attachments.
+	if strings.Contains(n.Text, "Se revisó el avance") || strings.Contains(n.Text, "Pablo") || len(n.Attachments) != 0 {
+		t.Error("notice leaks meeting content")
+	}
+	for _, mail := range fm.sent {
+		if mail.To != "alice@transgenia.org" {
+			t.Errorf("mail to %s before approval", mail.To)
+		}
+	}
+	// A re-run of the minutes (admin retry) never notifies twice.
+	calls := a.llm.calls
+	if _, err := a.app.DB.conn.Exec("UPDATE minutes SET status = 'failed' WHERE id = ?", m.ID); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := a.app.DB.RequeueMinutes(m.ID); !ok || err != nil {
+		t.Fatalf("requeue: %v %v", ok, err)
+	}
+	drain(a.testEnv)
+	if a.llm.calls != calls+1 {
+		t.Fatalf("minutes not regenerated: %d calls", a.llm.calls-calls)
+	}
+	a.advance(time.Hour) // let any (wrongly) re-queued notice become due
+	drain(a.testEnv)
+	if len(fm.notices()) != 1 {
+		t.Fatalf("notice repeated: %d", len(fm.notices()))
+	}
+}
+
+func TestHostNoticeForRoomWithoutOwnerGoesToAdmins(t *testing.T) {
+	e := newTestEnv(t)
+	fm := &fakeMailer{}
+	e.app.Mailer = fm
+	e.app.Config.AdminEmails = []string{"admin@transgenia.org"}
+	e.app.DB.CreateRoom("sala-legado", "x", "")
+	e.signedWebhook(eventJSON("TRANSCRIPTION_UPLOADED", "k1", "s1", "sala-legado", testLink))
+	drain(e)
+	if ns := fm.notices(); len(ns) != 1 || ns[0].To != "admin@transgenia.org" || !strings.Contains(ns[0].Text, "No hay participantes") {
+		t.Fatalf("notices: %+v", ns)
+	}
+}
+
+func TestHostNoticeRetriesThenFails(t *testing.T) {
+	e := newTestEnv(t)
+	fm := &fakeMailer{err: errors.New("smtp: connection failed")}
+	e.app.Mailer = fm
+	e.app.Config.AdminEmails = []string{"admin@transgenia.org"}
+	e.app.DB.CreateRoom("sala-legado", "x", "")
+	e.signedWebhook(eventJSON("TRANSCRIPTION_UPLOADED", "k1", "s1", "sala-legado", testLink))
+	e.app.processOne(context.Background())
+	for i := 1; i <= maxDeliveryAttempts; i++ {
+		if !e.app.processHostNotification(context.Background()) {
+			t.Fatalf("attempt %d not claimed", i)
+		}
+		e.advance(4 * time.Hour)
+	}
+	var status string
+	e.app.DB.conn.QueryRow("SELECT status FROM host_notifications").Scan(&status)
+	if status != "failed" || e.app.processHostNotification(context.Background()) {
+		t.Fatalf("status %s after max attempts", status)
+	}
+	// The minutes themselves are unaffected by the notice failing.
+	if ms, _ := e.app.DB.ListMinutes("sala-legado"); ms[0].Status != "ready" {
+		t.Fatalf("minutes status %s", ms[0].Status)
 	}
 }

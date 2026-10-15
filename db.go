@@ -145,6 +145,18 @@ var migrations = []string{
 		UNIQUE (minutes_id, email)
 	);
 	CREATE INDEX minutes_deliveries_due ON minutes_deliveries(status, next_attempt_at);`,
+	// v4: "your minutes are ready" e-mail to the room owner (internal only).
+	`CREATE TABLE host_notifications (
+		minutes_id      INTEGER NOT NULL REFERENCES minutes(id) ON DELETE CASCADE,
+		email           TEXT NOT NULL,
+		status          TEXT NOT NULL CHECK (status IN ('queued','sent','failed')),
+		attempts        INTEGER NOT NULL DEFAULT 0,
+		next_attempt_at INTEGER NOT NULL,
+		error           TEXT,
+		sent_at         INTEGER,
+		PRIMARY KEY (minutes_id, email)
+	);
+	CREATE INDEX host_notifications_due ON host_notifications(status, next_attempt_at);`,
 }
 
 func InitDB(path string) (*DB, error) {

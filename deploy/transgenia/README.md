@@ -110,7 +110,10 @@ Guests must give an e-mail and accept the transcription notice (with a link
 to the privacy notice) to join; hosts from the team use their Access e-mail.
 The e-mail goes into the JaaS JWT, so the signed `PARTICIPANT_JOINED` webhook
 tells exactly who was in each session (add that event to the JaaS webhook).
-When the minutes are ready the host sees the proposed recipients (confirmed
+When the minutes are ready the room owner gets one internal e-mail ("Minuta
+lista para revisar") with the link to the minutes page — no meeting content,
+only room, date and how many participants are proposed; rooms without owner
+notify `ADMIN_EMAILS`. On that page the host sees the proposed recipients (confirmed
 in the session, or joined through the link during the meeting), unticks
 anyone and approves. Only addresses from that list can be chosen; each
 address receives the minutes and the full transcript (attachments) once,

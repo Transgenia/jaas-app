@@ -463,3 +463,109 @@ func (app *App) processDelivery(ctx context.Context) bool {
 	}
 	return true
 }
+
+// --- "minutes ready" notice to the room owner ---
+
+type hostNotice struct {
+	MinutesID int64
+	Email     string
+	Attempts  int
+}
+
+func (db *DB) ClaimNextHostNotice(lease time.Duration) (*hostNotice, error) {
+	now := db.now()
+	var n hostNotice
+	err := db.conn.QueryRow(
+		`UPDATE host_notifications SET attempts = attempts + 1, next_attempt_at = ?
+		 WHERE rowid = (SELECT rowid FROM host_notifications WHERE status = 'queued' AND next_attempt_at <= ? ORDER BY next_attempt_at LIMIT 1)
+		 RETURNING minutes_id, email, attempts`,
+		now.Add(lease).Unix(), now.Unix(),
+	).Scan(&n.MinutesID, &n.Email, &n.Attempts)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	return &n, err
+}
+
+func (db *DB) FinishHostNotice(minutesID int64, email, status, errMsg string, retryIn time.Duration) error {
+	now := db.now()
+	switch status {
+	case "sent":
+		_, err := db.conn.Exec("UPDATE host_notifications SET status = 'sent', error = NULL, sent_at = ? WHERE minutes_id = ? AND email = ?", now.Unix(), minutesID, email)
+		return err
+	case "queued":
+		_, err := db.conn.Exec("UPDATE host_notifications SET status = 'queued', error = ?, next_attempt_at = ? WHERE minutes_id = ? AND email = ?", errMsg, now.Add(retryIn).Unix(), minutesID, email)
+		return err
+	default:
+		_, err := db.conn.Exec("UPDATE host_notifications SET status = 'failed', error = ? WHERE minutes_id = ? AND email = ?", errMsg, minutesID, email)
+		return err
+	}
+}
+
+// composeHostNotice deliberately carries no meeting content: only the room,
+// the date, how many participants are proposed and the link to review.
+func (app *App) composeHostNotice(n *hostNotice) (*Mail, error) {
+	m, err := app.DB.GetMinutes(n.MinutesID)
+	if err != nil {
+		return nil, permanent("la minuta ya no existe")
+	}
+	recipients, err := app.DB.ProposedRecipients(m)
+	if err != nil {
+		return nil, err
+	}
+	pending := 0
+	for _, r := range recipients {
+		if r.Status == "" {
+			pending++
+		}
+	}
+	loc := app.Config.DisplayTimezone
+	link := app.Config.PublicOrigin + "/admin/minutes/" + strconv.FormatInt(m.ID, 10)
+	var b strings.Builder
+	fmt.Fprintf(&b, "La minuta de la reunión %s del %s (hora del centro de México) está lista.\n\n", m.RoomSlug, m.MeetingAt.In(loc).Format("2006-01-02 15:04"))
+	fmt.Fprintf(&b, "Revísala y, si está bien, aprueba a quién se envía la transcripción y la minuta:\n%s\n\n", link)
+	switch pending {
+	case 0:
+		b.WriteString("No hay participantes con correo registrados para esta reunión.\n\n")
+	case 1:
+		b.WriteString("Hay 1 participante propuesto para recibir la copia.\n\n")
+	default:
+		fmt.Fprintf(&b, "Hay %d participantes propuestos para recibir la copia.\n\n", pending)
+	}
+	b.WriteString("Nada se envía a los participantes hasta que lo apruebes en el panel. Este aviso no incluye contenido de la reunión.\n-- \nTransgenia Reuniones\n")
+	return &Mail{
+		To:      n.Email,
+		Subject: fmt.Sprintf("Minuta lista para revisar: %s (%s)", m.RoomSlug, m.MeetingAt.In(loc).Format("2006-01-02")),
+		Text:    b.String(),
+	}, nil
+}
+
+func (app *App) processHostNotification(ctx context.Context) bool {
+	if app.Mailer == nil {
+		return false
+	}
+	n, err := app.DB.ClaimNextHostNotice(10 * time.Minute)
+	if errors.Is(err, ErrNotFound) {
+		return false
+	}
+	if err != nil {
+		slog.Error("host notice: claim failed")
+		return false
+	}
+	mail, err := app.composeHostNotice(n)
+	if err == nil {
+		err = app.Mailer.Send(ctx, mail)
+	}
+	switch {
+	case err == nil:
+		app.DB.FinishHostNotice(n.MinutesID, n.Email, "sent", "", 0)
+		slog.Info("host notice: sent", "minutes", n.MinutesID)
+	case isPermanent(err) || n.Attempts >= maxDeliveryAttempts:
+		app.DB.FinishHostNotice(n.MinutesID, n.Email, "failed", err.Error(), 0)
+		slog.Warn("host notice: failed", "minutes", n.MinutesID, "attempt", n.Attempts, "error", err.Error())
+	default:
+		app.DB.FinishHostNotice(n.MinutesID, n.Email, "queued", err.Error(), retryDelay(n.Attempts))
+		slog.Warn("host notice: retry scheduled", "minutes", n.MinutesID, "attempt", n.Attempts, "error", err.Error())
+	}
+	return true
+}

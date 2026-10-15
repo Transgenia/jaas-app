@@ -25,7 +25,8 @@ func mustRead(t *testing.T, path string) string {
 }
 
 func drain(e *testEnv) {
-	for e.app.processOne(context.Background()) || e.app.processDelivery(context.Background()) {
+	ctx := context.Background()
+	for e.app.processOne(ctx) || e.app.processHostNotification(ctx) || e.app.processDelivery(ctx) {
 	}
 }
 
