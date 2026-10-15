@@ -342,10 +342,11 @@ func TestEndMeetingRequiresModeratorSession(t *testing.T) {
 	guest := e.browser()
 	tok := hidden(t, guest.do(http.MethodGet, "/m/sala-prueba", nil).Body.String(), "form_token")
 	guest.do(http.MethodPost, "/m/sala-prueba/join", url.Values{"form_token": {tok}, "display_name": {"Invitada"}, "email": {"invitada@cliente.example"}, "consent": {"on"}})
-	if !strings.Contains(guest.do(http.MethodGet, "/m/sala-prueba", nil).Body.String(), `data-csrf=""`) {
-		t.Fatal("guest page exposes an end-meeting token")
+	gtok := regexp.MustCompile(`data-csrf="([^"]+)"`).FindStringSubmatch(guest.do(http.MethodGet, "/m/sala-prueba", nil).Body.String())
+	if gtok == nil {
+		t.Fatal("guest page has no CSRF token for audio uploads")
 	}
-	if rr := guest.do(http.MethodPost, "/m/sala-prueba/end", url.Values{"csrf_token": {""}}); rr.Code != http.StatusForbidden || !active() {
+	if rr := guest.do(http.MethodPost, "/m/sala-prueba/end", url.Values{"csrf_token": {gtok[1]}}); rr.Code != http.StatusForbidden || !active() {
 		t.Fatalf("guest end: %d", rr.Code)
 	}
 

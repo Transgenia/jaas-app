@@ -26,7 +26,8 @@ type App struct {
 	DB             *DB
 	DialIn         *DialInClient
 	LLM            MinutesGenerator
-	Mailer         Mailer // nil when SMTP is not configured
+	Mailer         Mailer      // nil when SMTP is not configured
+	Transcriber    Transcriber // browser-capture speech-to-text
 	DownloadClient *http.Client
 	CFAccess       *CFAccessVerifier
 
@@ -72,6 +73,8 @@ func NewApp(cfg *Config, db *DB) (*App, error) {
 		hostRoomLimiter: newFailureLimiter(20, time.Hour),
 		wake:            make(chan struct{}, 1),
 	}
+	app.Transcriber = &openAITranscriber{BaseURL: cfg.OpenAIBaseURL, Key: cfg.OpenAIKey, Model: cfg.TranscribeModel,
+		Prompt: cfg.TranscribePrompt, HTTP: &http.Client{Timeout: 10 * time.Minute}}
 	if cfg.SMTPHost != "" {
 		app.Mailer = &smtpMailer{Host: cfg.SMTPHost, Port: cfg.SMTPPort, Security: cfg.SMTPSecurity,
 			User: cfg.SMTPUser, Password: cfg.SMTPPassword, From: cfg.MailFrom, FromName: cfg.MailFromName}
@@ -188,7 +191,7 @@ func cmdServe() error {
 	go func() {
 		slog.Info("jaas-app listening", "version", version, "addr", cfg.ListenAddr, "model", cfg.OpenAIModel,
 			"retention_transcripts", cfg.TranscriptRetention.String(), "retention_minutes", cfg.MinutesRetention.String(),
-			"mail", cfg.SMTPHost != "")
+			"mail", cfg.SMTPHost != "", "transcribe_model", cfg.TranscribeModel)
 		errCh <- srv.ListenAndServe()
 	}()
 

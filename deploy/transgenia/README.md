@@ -104,6 +104,25 @@ Transcripts and minutes: `TRANSCRIPT_RETENTION_MONTHS` / `MINUTES_RETENTION_MONT
 (calendar months, Transgenia uses 9) or the `*_DAYS` variants (defaults 90 and
 365). The effective values are logged at start-up.
 
+## Transcription (browser capture)
+
+JaaS transcription and recording are paid add-ons, so the service records
+each participant's own microphone in their browser while the room has
+"Transcribir" on: after joining the meeting, the page asks for microphone
+permission, shows a "● Transcribiendo tu micrófono" badge, records only while
+the participant is unmuted in the meeting (silence otherwise) and uploads
+WebM/Opus chunks every 15 s (`POST /m/{slug}/audio`, participant session +
+CSRF header). Chunks of one page session form a stream on disk
+(`/data/audio`, 0600); streams of a room that overlap form a capture run.
+Two minutes without chunks closes a stream; five quiet minutes close the run.
+Each stream is transcribed with `TRANSCRIBE_MODEL` (whisper-1, segment
+timestamps), lines are merged by wall-clock time with the speaker's name,
+Whisper hallucinations on silence and cross-microphone echoes are dropped,
+and the transcript enters the usual minutes pipeline (session id
+`captura-N`). Audio files are deleted once transcribed, on room deletion,
+and in any case after 24 h. The join page tells participants that their
+microphone is recorded and sent to OpenAI and asks for consent.
+
 ## Sending transcripts and minutes to participants
 
 Guests must give an e-mail and accept the transcription notice (with a link

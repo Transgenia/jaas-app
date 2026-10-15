@@ -78,7 +78,12 @@ func (db *DB) PurgeExpired(transcripts, minutes Retention) (map[string]int64, er
 				name string
 				q    string
 				args []any
-			}{"session_participants", "DELETE FROM session_participants WHERE joined_at < ?", []any{cutoff.Unix()}})
+			}{"session_participants", "DELETE FROM session_participants WHERE joined_at < ?", []any{cutoff.Unix()}},
+			struct {
+				name string
+				q    string
+				args []any
+			}{"capture_runs", "DELETE FROM capture_runs WHERE started_at < ? AND status IN ('done','failed')", []any{cutoff.Unix()}})
 	}
 	if cutoff, ok := minutes.Cutoff(now); ok {
 		steps = append(steps, struct {
@@ -102,6 +107,9 @@ func (app *App) runRetention(ctx context.Context) {
 		if err != nil {
 			slog.Error("retention: purge failed", "error", err.Error())
 			return
+		}
+		if n := app.purgeOrphanAudio(); n > 0 {
+			res["audio_files"] = int64(n)
 		}
 		for k, n := range res {
 			if n > 0 {

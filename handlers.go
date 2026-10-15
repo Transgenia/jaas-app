@@ -93,6 +93,7 @@ func (app *App) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /m/{slug}", app.handleMeeting)
 	mux.HandleFunc("POST /m/{slug}/join", app.handleJoinMeeting)
 	mux.HandleFunc("POST /m/{slug}/end", app.handleEndMeeting)
+	mux.HandleFunc("POST /m/{slug}/audio", app.handleAudioChunk)
 
 	mux.HandleFunc("POST /webhook/recording", app.handleRecordingWebhook)
 }
@@ -528,6 +529,7 @@ func (app *App) handleDeleteRoom(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	app.deleteRoomAudio(room.Slug)
 	if err := app.DB.DeleteRoom(room.Slug); err != nil {
 		app.serverError(w, "delete room", err)
 		return
@@ -628,6 +630,7 @@ func (app *App) handleMeeting(w http.ResponseWriter, r *http.Request) {
 			"IsModerator": p.Moderator,
 			"DisplayName": p.DisplayName,
 			"CSRF":        p.CSRFToken,
+			"Capture":     room.Transcription && app.Transcriber != nil,
 		})
 		return
 	}

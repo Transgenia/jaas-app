@@ -637,7 +637,7 @@ func (app *App) runWorker(ctx context.Context) {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 	for {
-		for app.processOne(ctx) || app.processHostNotification(ctx) || app.processDelivery(ctx) {
+		for app.processCapture(ctx) || app.processOne(ctx) || app.processHostNotification(ctx) || app.processDelivery(ctx) {
 			if ctx.Err() != nil {
 				return
 			}

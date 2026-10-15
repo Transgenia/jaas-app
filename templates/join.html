@@ -21,10 +21,10 @@
 				<input type="text" id="display_name" name="display_name" value="{{.Name}}" required maxlength="80" autofocus autocomplete="name" />
 				<label for="email">Tu correo</label>
 				<input type="email" id="email" name="email" value="{{.Email}}" required maxlength="254" autocomplete="email" />
-				<p class="foot" style="text-align:left">Esta reunión se transcribe. Al terminar, el anfitrión puede enviarte a este correo la transcripción y la minuta.
+				<p class="foot" style="text-align:left">Esta reunión se transcribe: mientras participas, tu navegador graba tu micrófono (no cuando te silencias) y el audio se envía a OpenAI para transcribirlo; después se borra. Al terminar, el anfitrión puede enviarte a este correo la transcripción y la minuta.
 					<a href="https://transgenia.org/legal-privacidad.html" target="_blank" rel="noopener">Aviso de privacidad</a>.</p>
 				<label style="display:flex;gap:.5rem;align-items:flex-start"><input type="checkbox" name="consent" required />
-					<span>Acepto que la reunión se transcriba y recibir la copia por correo.</span></label>
+					<span>Acepto que se grabe y transcriba mi micrófono durante la reunión y recibir la copia por correo.</span></label>
 				<button type="submit" class="block">Entrar a la reunión</button>
 				<p class="foot"><button type="button" id="host-toggle" class="linklike">¿Eres el anfitrión?</button></p>
 				<div id="host-section" class="{{if not .HostOpen}}hidden{{end}}">

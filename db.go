@@ -157,6 +157,36 @@ var migrations = []string{
 		PRIMARY KEY (minutes_id, email)
 	);
 	CREATE INDEX host_notifications_due ON host_notifications(status, next_attempt_at);`,
+	// v5: browser capture. Each participant's page uploads its own microphone
+	// (stream); the streams of one meeting form a run.
+	`CREATE TABLE capture_runs (
+		id                 INTEGER PRIMARY KEY,
+		room_slug          TEXT NOT NULL,
+		started_at         INTEGER NOT NULL,
+		last_activity_at   INTEGER NOT NULL,
+		ended_at           INTEGER,
+		status             TEXT NOT NULL CHECK (status IN ('open','transcribing','done','failed')),
+		minutes_session_id TEXT,
+		error              TEXT
+	);
+	CREATE INDEX capture_runs_room ON capture_runs(room_slug, status);
+	CREATE TABLE audio_streams (
+		id              TEXT PRIMARY KEY,
+		room_slug       TEXT NOT NULL,
+		run_id          INTEGER NOT NULL REFERENCES capture_runs(id) ON DELETE CASCADE,
+		email           TEXT NOT NULL,
+		display_name    TEXT NOT NULL,
+		started_at      INTEGER NOT NULL,
+		last_chunk_at   INTEGER NOT NULL,
+		next_seq        INTEGER NOT NULL,
+		bytes           INTEGER NOT NULL,
+		status          TEXT NOT NULL CHECK (status IN ('recording','closed','transcribed','failed')),
+		attempts        INTEGER NOT NULL DEFAULT 0,
+		next_attempt_at INTEGER NOT NULL DEFAULT 0,
+		transcript      TEXT,
+		error           TEXT
+	);
+	CREATE INDEX audio_streams_run ON audio_streams(run_id, status);`,
 }
 
 func InitDB(path string) (*DB, error) {
@@ -284,6 +314,7 @@ func (db *DB) DeleteRoom(slug string) error {
 		"DELETE FROM minutes WHERE room_slug = ?",
 		"DELETE FROM participant_sessions WHERE room_slug = ?",
 		"DELETE FROM session_participants WHERE room_slug = ?",
+		"DELETE FROM capture_runs WHERE room_slug = ?",
 		"UPDATE webhook_events SET room_slug = NULL, session_id = NULL WHERE room_slug = ?",
 		"DELETE FROM rooms WHERE slug = ?",
 	} {

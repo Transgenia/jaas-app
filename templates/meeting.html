@@ -11,6 +11,6 @@
 </head>
 <body class="meeting">
 	<div id="meet" data-app-id="{{.AppID}}" data-room="{{.Slug}}" data-jwt="{{.JWT}}" data-name="{{.DisplayName}}"
-		data-moderator="{{.IsModerator}}" data-csrf="{{if .IsModerator}}{{.CSRF}}{{end}}"></div>
+		data-moderator="{{.IsModerator}}" data-csrf="{{.CSRF}}" data-capture="{{.Capture}}"></div>
 </body>
 </html>

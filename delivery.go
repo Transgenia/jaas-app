@@ -107,9 +107,22 @@ func (db *DB) ProposedRecipients(m *Minutes) ([]Recipient, error) {
 		start = first
 	}
 
+	speakers, err := db.captureSpeakers(m.SessionID)
+	if err != nil {
+		return nil, err
+	}
+	for _, sp := range speakers {
+		byEmail[sp[0]] = &Recipient{Email: sp[0], Name: sp[1], InSession: true}
+	}
+	// Browser-capture sessions have no JaaS session id: JaaS participants are
+	// matched by time window, like join-form entries.
+	sources := "'join'"
+	if len(byEmail) == 0 || len(speakers) > 0 {
+		sources = "'join','jaas'"
+	}
 	rows, err = db.conn.Query(
 		`SELECT email, display_name FROM session_participants
-		 WHERE room_slug = ? AND source = 'join' AND joined_at BETWEEN ? AND ? ORDER BY joined_at`,
+		 WHERE room_slug = ? AND source IN (`+sources+`) AND joined_at BETWEEN ? AND ? ORDER BY joined_at`,
 		m.RoomSlug, start.Add(-15*time.Minute).Unix(), m.MeetingAt.Add(5*time.Minute).Unix())
 	if err != nil {
 		return nil, err

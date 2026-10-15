@@ -92,7 +92,8 @@ func newTestEnv(t *testing.T) *testEnv {
 	slog.SetDefault(slog.New(slog.NewTextHandler(env.logs, nil)))
 	t.Cleanup(func() { slog.SetDefault(prev) })
 
-	db, err := InitDB(filepath.Join(t.TempDir(), "test.db"))
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	db, err := InitDB(dbPath)
 	if err != nil {
 		t.Fatalf("init db: %v", err)
 	}
@@ -108,6 +109,7 @@ func newTestEnv(t *testing.T) *testEnv {
 	proxies, _ := parseCIDRs([]string{"127.0.0.0/8"})
 	cfg := &Config{
 		PublicOrigin:         testOrigin,
+		DBPath:               dbPath,
 		JaaSAppID:            testAppID,
 		JaaSKeyID:            testAppID + "/key1",
 		JaaSKey:              testKey(t),

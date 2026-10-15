@@ -120,6 +120,8 @@ func (app *App) withMiddleware(next http.Handler) http.Handler {
 			limit := int64(formBodyLimit)
 			if isWebhook {
 				limit = webhookBodyLimit
+			} else if strings.HasPrefix(r.URL.Path, "/m/") && strings.HasSuffix(r.URL.Path, "/audio") {
+				limit = chunkBodyLimit
 			}
 			r.Body = http.MaxBytesReader(rec, r.Body, limit)
 		}

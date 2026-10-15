@@ -74,7 +74,7 @@
 				{{end}}
 				<form method="POST" action="/admin/rooms/{{.Slug}}/transcription">
 					<input type="hidden" name="csrf_token" value="{{$.CSRF}}" />
-					<label style="margin:0"><input type="checkbox" name="enabled" data-autosubmit {{if .Transcription}}checked{{end}} /> Transcribir</label>
+					<label style="margin:0"><input type="checkbox" name="enabled" data-autosubmit {{if .Transcription}}checked{{end}} /> Transcribir (micrófonos + OpenAI)</label>
 					<noscript><button type="submit" class="secondary">Guardar</button></noscript>
 				</form>
 				<form method="POST" action="/admin/rooms/{{.Slug}}/delete"
