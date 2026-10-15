@@ -454,7 +454,7 @@ type roomView struct {
 }
 
 func (app *App) dashboardData(r *http.Request, extra map[string]any) (map[string]any, error) {
-	app.DB.DeactivateExpiredRooms(4 * time.Hour)
+	app.DB.DeactivateExpiredRooms(app.maxMeeting())
 	s := adminFrom(r)
 	var rooms []Room
 	var err error
@@ -635,19 +635,19 @@ func (app *App) startParticipant(w http.ResponseWriter, slug, name, email string
 			return err
 		}
 	}
-	token, err := app.DB.CreateParticipantSession(slug, name, email, moderator)
+	token, err := app.DB.CreateParticipantSession(slug, name, email, moderator, app.maxMeeting())
 	if err != nil {
 		return err
 	}
 	if err := app.DB.RecordJoin(slug, email, name, moderator); err != nil {
 		return err
 	}
-	app.setCookie(w, "tgm_part", token, participantLifetime)
+	app.setCookie(w, "tgm_part", token, app.maxMeeting())
 	return nil
 }
 
 func (app *App) handleMeeting(w http.ResponseWriter, r *http.Request) {
-	app.DB.DeactivateExpiredRooms(4 * time.Hour)
+	app.DB.DeactivateExpiredRooms(app.maxMeeting())
 	room, ok := app.roomFromPath(w, r)
 	if !ok {
 		return
@@ -658,7 +658,7 @@ func (app *App) handleMeeting(w http.ResponseWriter, r *http.Request) {
 			app.DB.SetRoomActive(room.Slug, true)
 		}
 		jwt, err := GenerateJWT(app.Config.JaaSKey, app.Config.JaaSAppID, app.Config.JaaSKeyID,
-			room.Slug, p.DisplayName, p.Email, p.Moderator, room.Transcription)
+			room.Slug, p.DisplayName, p.Email, p.Moderator, room.Transcription, app.maxMeeting())
 		if err != nil {
 			app.serverError(w, "jwt", err)
 			return

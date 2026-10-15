@@ -38,7 +38,8 @@ type Config struct {
 	OpenAIKey          string
 	OpenAIModel        string
 	OpenAIBaseURL      string
-	TranscribeModel    string // browser-capture speech-to-text (OpenAI audio API)
+	TranscribeModel    string        // browser-capture speech-to-text (OpenAI audio API)
+	MaxMeeting         time.Duration // how long a started room, its participant sessions and JWTs last
 	TranscribePrompt   string
 	WorkerMaxAttempts  int
 	MaxTranscriptSize  int64 // bytes downloaded from JaaS
@@ -244,6 +245,11 @@ func LoadConfig() (*Config, error) {
 		return nil, fmt.Errorf("OPENAI_MODEL is required (run `jaas-app models` to list the ones available)")
 	}
 
+	hours, err := envInt("MAX_MEETING_HOURS", 24)
+	if err != nil || hours < 1 || hours > 48 {
+		return nil, fmt.Errorf("MAX_MEETING_HOURS must be between 1 and 48")
+	}
+	cfg.MaxMeeting = time.Duration(hours) * time.Hour
 	cfg.TranscribeModel = envDefault("TRANSCRIBE_MODEL", "whisper-1")
 	cfg.TranscribePrompt = envDefault("TRANSCRIBE_PROMPT", "Reunión de trabajo de Transgenia en español de México. Términos: Transgenia, Odoo, CFDI, ERP.")
 	if cfg.WorkerMaxAttempts, err = envInt("WORKER_MAX_ATTEMPTS", 5); err != nil {

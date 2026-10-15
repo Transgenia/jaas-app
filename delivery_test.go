@@ -389,3 +389,80 @@ func TestHostNoticeRetriesThenFails(t *testing.T) {
 		t.Fatalf("minutes status %s", ms[0].Status)
 	}
 }
+
+func TestMinutesEmailHTML(t *testing.T) {
+	a, alice, csrf, m, fm := meetingWithParticipants(t)
+	alice.do(http.MethodPost, "/admin/minutes/"+strconv.FormatInt(m.ID, 10)+"/send", url.Values{"csrf_token": {csrf}, "recipient": {"ana@cliente.example"}})
+	drain(a.testEnv)
+	copies := fm.copies()
+	if len(copies) != 1 {
+		t.Fatalf("copies: %d", len(copies))
+	}
+	h := copies[0].HTML
+	for _, want := range []string{
+		"TRANSGENIA", "Hola Ana:", "Puntos clave", "Migración a Odoo 18", "Tareas acordadas", "Enviar propuesta",
+		"Análisis de sentimiento", "Por participante", "Momentos clave", "De acuerdo, la mando el viernes",
+		"linear-gradient(90deg,#EE7623 0%,#F0A055 33%,#D8292F 72%,#D1333B 100%)", "legal-privacidad.html",
+	} {
+		if !strings.Contains(h, want) {
+			t.Errorf("HTML lacks %q", want)
+		}
+	}
+	// The model's invented participant is dropped (not among the speakers).
+	if strings.Contains(h, "Inventado") {
+		t.Error("invented participant shown")
+	}
+	// Only palette colours (plus white body) and no remote images.
+	allowed := map[string]bool{"#101820": true, "#EE7623": true, "#D1333B": true, "#F0A055": true, "#D8292F": true,
+		"#FEFEEA": true, "#003C4D": true, "#3D3935": true, "#FFFFFF": true}
+	for _, c := range regexp.MustCompile(`#[0-9A-Fa-f]{6}\b`).FindAllString(h, -1) {
+		if !allowed[strings.ToUpper(c)] {
+			t.Errorf("colour outside the palette: %s", c)
+		}
+	}
+	if strings.Contains(h, "<img") || strings.Contains(h, "<style") || strings.Contains(h, "—") {
+		t.Error("remote image, <style> block or long dash in the e-mail")
+	}
+	// Orange is never used as a text colour on a light background.
+	if regexp.MustCompile(`[^-]color:#EE7623`).MatchString(strings.ReplaceAll(h, "background-color:#EE7623", "")) &&
+		!strings.Contains(h, "color:#EE7623;text-transform:uppercase;padding-top:6px") {
+		t.Error("orange text outside the navy header")
+	}
+	// Plain-text alternative is still there; MIME carries both.
+	raw, err := buildMIME("contacto@transgenia.org", "Transgenia Reuniones", copies[0], time.Now())
+	if err != nil || !strings.Contains(string(raw), "multipart/alternative") || !strings.Contains(string(raw), "text/html") {
+		t.Fatalf("mime: %v", err)
+	}
+	notices := fm.notices()
+	if len(notices) != 1 || !strings.Contains(notices[0].HTML, "Revisar y aprobar") || !strings.Contains(notices[0].HTML, "/admin/minutes/") {
+		t.Fatal("host notice HTML")
+	}
+}
+
+func TestComputeMetrics(t *testing.T) {
+	base := time.Date(2026, 10, 15, 10, 0, 0, 0, time.UTC)
+	us := []utterance{
+		{Name: "Ana", Text: "uno dos tres cuatro cinco seis", Start: base, Duration: 3 * time.Second},
+		{Name: "Beto", Text: "siete ocho", Start: base.Add(2 * time.Second), Duration: 1 * time.Second}, // interrupts Ana
+		{Name: "Ana", Text: "nueve diez once doce", Start: base.Add(5 * time.Second), Duration: 2 * time.Second},
+	}
+	m := computeMetrics(us)
+	if m == nil || !m.Measured || len(m.Speakers) != 2 {
+		t.Fatalf("metrics: %+v", m)
+	}
+	ana, beto := m.Speakers[0], m.Speakers[1]
+	if ana.Speaker != "Ana" || ana.Turns != 2 || ana.Words != 10 || ana.TalkSeconds != 5 || ana.SharePct != 83.3 || ana.WordsPerMinute != 120 {
+		t.Errorf("ana: %+v", ana)
+	}
+	if beto.Interruptions != 1 || beto.Turns != 1 || ana.Interruptions != 0 {
+		t.Errorf("interruptions: ana %d beto %d", ana.Interruptions, beto.Interruptions)
+	}
+	if !strings.Contains(metricsForPrompt(m), "Ana: 83% del tiempo de habla, 2 turnos, 120 palabras/min") {
+		t.Errorf("prompt: %s", metricsForPrompt(m))
+	}
+	// Without durations (JaaS transcripts) the figures are estimated and flagged.
+	us[0].Duration, us[1].Duration, us[2].Duration = 0, 0, 0
+	if computeMetrics(us).Measured {
+		t.Error("estimated metrics flagged as measured")
+	}
+}

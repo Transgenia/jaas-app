@@ -20,7 +20,6 @@ import (
 const (
 	adminIdleTimeout     = 2 * time.Hour
 	adminAbsoluteTimeout = 12 * time.Hour
-	participantLifetime  = 4 * time.Hour
 	bcryptCost           = 12
 	minAdminPasswordLen  = 14
 	minHostPasswordLen   = 10
@@ -230,12 +229,12 @@ type ParticipantSession struct {
 	CSRFToken   string
 }
 
-func (db *DB) CreateParticipantSession(slug, displayName, email string, moderator bool) (string, error) {
+func (db *DB) CreateParticipantSession(slug, displayName, email string, moderator bool, lifetime time.Duration) (string, error) {
 	token := randomToken()
 	now := db.now()
 	_, err := db.conn.Exec(
 		"INSERT INTO participant_sessions (token_hash, room_slug, display_name, email, moderator, csrf_token, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-		hashToken(token), slug, displayName, email, moderator, randomToken(), now.Unix(), now.Add(participantLifetime).Unix(),
+		hashToken(token), slug, displayName, email, moderator, randomToken(), now.Unix(), now.Add(lifetime).Unix(),
 	)
 	return token, err
 }

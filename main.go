@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -38,6 +39,15 @@ type App struct {
 	wake      chan struct{}
 	clock     func() time.Time
 	templates *template.Template
+}
+
+// maxMeeting: how long a started room stays open to guests and how long a
+// participant session (and its JaaS JWT) lasts. Default 24 h.
+func (app *App) maxMeeting() time.Duration {
+	if app.Config.MaxMeeting > 0 {
+		return app.Config.MaxMeeting
+	}
+	return 24 * time.Hour
 }
 
 func (app *App) now() time.Time {
@@ -113,6 +123,10 @@ func main() {
 		err = cmdModels()
 	case "send-test-mail":
 		err = cmdSendTestMail(os.Args[2:])
+	case "regenerate-minutes":
+		err = cmdRegenerateMinutes(os.Args[2:])
+	case "send-preview":
+		err = cmdSendPreview(os.Args[2:])
 	case "version":
 		fmt.Println(version)
 	default:
@@ -136,6 +150,8 @@ func printUsage() {
 	fmt.Fprintf(os.Stderr, "  reset-admin        Read a temporary admin password from stdin; revokes sessions\n")
 	fmt.Fprintf(os.Stderr, "  models             List OpenAI models available to OPENAI_API_KEY\n")
 	fmt.Fprintf(os.Stderr, "  send-test-mail TO  Send a test message through the configured SMTP server\n")
+	fmt.Fprintf(os.Stderr, "  regenerate-minutes ID   Queue minutes ID again (stored transcript, no new notices)\n")
+	fmt.Fprintf(os.Stderr, "  send-preview ID TO      E-mail the participant version of minutes ID to TO only\n")
 	fmt.Fprintf(os.Stderr, "  version            Display version information\n")
 }
 
@@ -349,6 +365,74 @@ func cmdSendTestMail(args []string) error {
 			"Si lo recibes, el envío de transcripciones y minutas aprobadas por el anfitrión funciona.\n",
 	})
 	if err != nil {
+		return err
+	}
+	fmt.Println("sent")
+	return nil
+}
+
+// cmdRegenerateMinutes re-runs the model on the stored transcript (e.g. after
+// a schema change). The host notice is not repeated and nothing is sent.
+func cmdRegenerateMinutes(args []string) error {
+	if len(args) != 1 {
+		return errors.New("usage: regenerate-minutes ID")
+	}
+	id, err := strconv.ParseInt(args[0], 10, 64)
+	if err != nil {
+		return err
+	}
+	db, err := InitDB(envDefault("DB_PATH", "./jaas.db"))
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	if _, err := db.conn.Exec("UPDATE minutes SET status = 'failed' WHERE id = ? AND status = 'ready'", id); err != nil {
+		return err
+	}
+	ok, err := db.RequeueMinutes(id)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return errors.New("minutes not found or no stored transcript")
+	}
+	fmt.Println("queued; the running service picks it up within 30 s")
+	return nil
+}
+
+// cmdSendPreview renders the participant e-mail for minutes ID and sends it
+// to one address, outside the delivery queue and its records.
+func cmdSendPreview(args []string) error {
+	if len(args) != 2 || normalizeEmail(args[1]) == "" {
+		return errors.New("usage: send-preview ID ADDRESS")
+	}
+	id, err := strconv.ParseInt(args[0], 10, 64)
+	if err != nil {
+		return err
+	}
+	cfg, err := LoadConfig()
+	if err != nil {
+		return err
+	}
+	if cfg.SMTPHost == "" {
+		return errors.New("SMTP_HOST is not configured")
+	}
+	db, err := InitDB(cfg.DBPath)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	app := &App{Config: cfg, DB: db}
+	mail, err := app.composeDelivery(&delivery{MinutesID: id, Email: normalizeEmail(args[1]), Name: "", ApprovedBy: normalizeEmail(args[1])})
+	if err != nil {
+		return err
+	}
+	mail.Subject = "[Vista previa] " + mail.Subject
+	m := &smtpMailer{Host: cfg.SMTPHost, Port: cfg.SMTPPort, Security: cfg.SMTPSecurity,
+		User: cfg.SMTPUser, Password: cfg.SMTPPassword, From: cfg.MailFrom, FromName: cfg.MailFromName}
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	if err := m.Send(ctx, mail); err != nil {
 		return err
 	}
 	fmt.Println("sent")

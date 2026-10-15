@@ -69,7 +69,7 @@ func TestWorkerProducesOneDraftPerSession(t *testing.T) {
 	if page.Code != http.StatusOK || !strings.Contains(page.Body.String(), "Borrador generado automáticamente") || !strings.Contains(page.Body.String(), "Enviar propuesta") {
 		t.Fatalf("minutes page: %d", page.Code)
 	}
-	if !strings.Contains(page.Body.String(), "Migración a Odoo 18") || !strings.Contains(page.Body.String(), "Tono de la reunión") {
+	if !strings.Contains(page.Body.String(), "Migración a Odoo 18") || !strings.Contains(page.Body.String(), "Análisis de sentimiento") {
 		t.Fatal("key points or sentiment missing from the minutes page")
 	}
 	md := b.do(http.MethodGet, "/admin/minutes/"+itoa(m.ID)+"/download", nil)

@@ -334,6 +334,7 @@ func keepSegment(s transcriptSegment) bool {
 
 type timedLine struct {
 	At    time.Time
+	Dur   time.Duration
 	Name  string
 	Text  string
 	Score float64
@@ -498,8 +499,12 @@ func (app *App) finishRun(run *captureRun) {
 		base := time.UnixMilli(startedMs)
 		for _, s := range segs {
 			if keepSegment(s) {
+				var dur time.Duration
+				if s.End > s.Start {
+					dur = time.Duration((s.End - s.Start) * float64(time.Second))
+				}
 				lines = append(lines, timedLine{
-					At: base.Add(time.Duration(s.Start * float64(time.Second))), Name: name,
+					At: base.Add(time.Duration(s.Start * float64(time.Second))), Dur: dur, Name: name,
 					Text: strings.TrimSpace(s.Text), Score: s.AvgLogprob,
 				})
 			}
@@ -515,16 +520,17 @@ func (app *App) finishRun(run *captureRun) {
 		return
 	}
 	type msg struct {
-		Name      string `json:"name"`
-		Content   string `json:"content"`
-		Timestamp int64  `json:"timestamp"`
+		Name       string `json:"name"`
+		Content    string `json:"content"`
+		Timestamp  int64  `json:"timestamp"`
+		DurationMs int64  `json:"duration_ms,omitempty"`
 	}
 	doc := struct {
 		Source   string `json:"source"`
 		Messages []msg  `json:"messages"`
 	}{Source: "browser-capture"}
 	for _, l := range lines {
-		doc.Messages = append(doc.Messages, msg{Name: l.Name, Content: l.Text, Timestamp: l.At.UnixMilli()})
+		doc.Messages = append(doc.Messages, msg{Name: l.Name, Content: l.Text, Timestamp: l.At.UnixMilli(), DurationMs: l.Dur.Milliseconds()})
 	}
 	data, _ := json.Marshal(doc)
 	end := lines[len(lines)-1].At

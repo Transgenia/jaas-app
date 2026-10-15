@@ -377,7 +377,7 @@ func TestDeleteRoomRemovesRelatedData(t *testing.T) {
 	}
 	for e.app.processOne(context.Background()) {
 	}
-	e.app.DB.CreateParticipantSession("sala-borrar", "X", "x@cliente.example", false)
+	e.app.DB.CreateParticipantSession("sala-borrar", "X", "x@cliente.example", false, time.Hour)
 
 	if rr := b.do(http.MethodPost, "/admin/rooms/sala-borrar/delete", url.Values{"csrf_token": {csrf}}); rr.Code != http.StatusSeeOther {
 		t.Fatalf("delete: %d", rr.Code)
@@ -489,5 +489,35 @@ func TestStaticAssetsAreVersioned(t *testing.T) {
 		if assetVersions[name] == "" {
 			t.Errorf("no version for %s", name)
 		}
+	}
+}
+
+func TestMeetingsLastUpTo24Hours(t *testing.T) {
+	e := newTestEnv(t)
+	b, csrf := e.loginAdmin()
+	e.createRoom(b, csrf, "sala-larga")
+	host := e.browser()
+	tok := hidden(t, host.do(http.MethodGet, "/m/sala-larga", nil).Body.String(), "form_token")
+	form := url.Values{"form_token": {tok}, "display_name": {"Ana"}, "email": {"ana@cliente.example"}, "consent": {"on"}, "host_password": {"anfitrion-secreto"}}
+	if rr := host.do(http.MethodPost, "/m/sala-larga/join", form); rr.Code != http.StatusSeeOther {
+		t.Fatalf("host join: %d", rr.Code)
+	}
+	claims := jwtClaims(t, e, host.do(http.MethodGet, "/m/sala-larga", nil).Body.String())
+	exp, _ := claims.GetExpirationTime()
+	if d := exp.Sub(time.Now()); d < 23*time.Hour || d > 25*time.Hour {
+		t.Errorf("JWT lifetime %v, want ~24 h", d)
+	}
+	e.advance(23 * time.Hour)
+	e.app.DB.DeactivateExpiredRooms(e.app.maxMeeting())
+	if r, _ := e.app.DB.GetRoom("sala-larga"); !r.Active {
+		t.Fatal("room closed before 24 h")
+	}
+	if rr := host.do(http.MethodGet, "/m/sala-larga", nil); !strings.Contains(rr.Body.String(), "data-jwt=") {
+		t.Fatal("participant session expired before 24 h")
+	}
+	e.advance(2 * time.Hour)
+	e.app.DB.DeactivateExpiredRooms(e.app.maxMeeting())
+	if r, _ := e.app.DB.GetRoom("sala-larga"); r.Active {
+		t.Fatal("room still active after 25 h")
 	}
 }

@@ -102,7 +102,7 @@ func (db *DB) PurgeExpired(transcripts, minutes Retention) (map[string]int64, er
 
 func (app *App) runRetention(ctx context.Context) {
 	purge := func() {
-		app.DB.DeactivateExpiredRooms(4 * time.Hour)
+		app.DB.DeactivateExpiredRooms(app.maxMeeting())
 		res, err := app.DB.PurgeExpired(app.Config.TranscriptRetention, app.Config.MinutesRetention)
 		if err != nil {
 			slog.Error("retention: purge failed", "error", err.Error())

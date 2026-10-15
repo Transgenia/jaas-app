@@ -23,8 +23,17 @@
 			<p>{{.R.Summary}}</p>
 			{{if .R.KeyPoints}}<h2>Puntos clave</h2>
 			<ul>{{range .R.KeyPoints}}<li>{{.}}</li>{{end}}</ul>{{end}}
-			{{with .R.Sentiment.Overall}}<h2>Tono de la reunión</h2>
-			<p><span class="badge {{if eq . "positivo"}}ok{{else if eq . "negativo"}}bad{{else}}warn{{end}}">{{.}}</span> {{$.R.Sentiment.Explanation}}</p>{{end}}
+			{{with .R.Sentiment.Overall}}<h2>Análisis de sentimiento</h2>
+			<p><span class="badge {{if eq . "positivo"}}ok{{else if eq . "negativo"}}bad{{else}}warn{{end}}">{{.}}</span> {{$.R.Sentiment.Explanation}}</p>
+			{{if $.R.Sentiment.Timeline}}<table><tr><th>Fase</th><th>Sentimiento</th><th>Resumen</th></tr>
+				{{range $.R.Sentiment.Timeline}}<tr><td>{{.Phase}}</td><td>{{.Overall}}</td><td>{{.Summary}}</td></tr>{{end}}</table>{{end}}
+			{{if $.R.Sentiment.BySpeaker}}<table><tr><th>Participante</th><th>Sentimiento</th><th>Explicación</th><th>Evidencia</th></tr>
+				{{range $.R.Sentiment.BySpeaker}}<tr><td>{{.Speaker}}</td><td>{{.Overall}}</td><td>{{.Explanation}}</td><td class="muted">{{.Evidence}}</td></tr>{{end}}</table>{{end}}
+			{{if $.R.Sentiment.Moments}}<ul>{{range $.R.Sentiment.Moments}}<li><strong>{{.Emotion}}</strong>{{with .Time}} · {{deref .}}{{end}} · {{.Speaker}}: <em>“{{.Quote}}”</em></li>{{end}}</ul>{{end}}
+			{{with $.R.Metrics}}<h2>Participación {{if .Measured}}medida en el audio{{else}}estimada{{end}}</h2>
+			<table><tr><th>Participante</th><th>Tiempo de habla</th><th>Palabras/min</th><th>Turnos</th><th>Turno más largo</th><th>Interrupciones</th></tr>
+				{{range .Speakers}}<tr><td>{{.Speaker}}</td><td>{{printf "%.0f" .SharePct}}%</td><td>{{printf "%.0f" .WordsPerMinute}}</td><td>{{.Turns}}</td><td>{{printf "%.0f" .LongestTurnSec}} s</td><td>{{.Interruptions}}</td></tr>{{end}}</table>{{end}}
+			<p class="muted">{{with $.R.Sentiment.Caveats}}{{.}} {{end}}El análisis combina lo dicho con señales medidas del audio (tiempo de habla, ritmo, turnos e interrupciones); no mide el tono de voz.</p>{{end}}
 			<h2>Decisiones</h2>
 			{{if .R.Decisions}}<ul>{{range .R.Decisions}}<li><strong>{{.Decision}}</strong> — {{.Context}}</li>{{end}}</ul>{{else}}<p class="muted">Sin decisiones explícitas.</p>{{end}}
 			<h2>Tareas</h2>

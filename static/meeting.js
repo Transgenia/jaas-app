@@ -46,8 +46,11 @@
 	}
 
 	// startCapture records this participant's own microphone for the meeting
-	// transcript. While the participant is muted in the meeting the track is
-	// disabled, so only silence is recorded. Audio is uploaded every 15 s.
+	// transcript. Nothing is recorded or uploaded while the participant is
+	// muted in the meeting: muting closes the current audio stream and
+	// unmuting opens a new one (each stream carries its own start time, so
+	// the transcript stays aligned). A stream is also rotated every 60 min to
+	// stay under the speech-to-text file limit. Chunks upload every 15 s.
 	function startCapture() {
 		var badge = document.createElement("div")
 		badge.className = "capture-badge"
@@ -63,72 +66,95 @@
 			return function () {}
 		}
 		var stopped = false
+		var media = null
+		var current = null // { rec, rotate }
+		var failed = false
+		var queue = Promise.resolve()
+		var wait = function (ms) {
+			return new Promise(function (r) { setTimeout(r, ms) })
+		}
+		var newStreamId = function () {
+			var id = new Uint8Array(18)
+			crypto.getRandomValues(id)
+			return btoa(String.fromCharCode.apply(null, id)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "")
+		}
+		var upload = function (url, blob, attempt) {
+			return fetch(url, {
+				method: "POST",
+				headers: { "Content-Type": "audio/webm", "X-CSRF-Token": d.csrf },
+				body: blob,
+				credentials: "same-origin",
+				keepalive: blob.size < 60000,
+			})
+				.then(function (r) {
+					if (r.ok) return
+					if (r.status >= 500 && attempt < 3) return wait(2000 * (attempt + 1)).then(function () { return upload(url, blob, attempt + 1) })
+					throw new Error("upload " + r.status)
+				})
+				.catch(function (err) {
+					if (attempt < 3 && !(err && /upload/.test(err.message))) {
+						return wait(2000 * (attempt + 1)).then(function () { return upload(url, blob, attempt + 1) })
+					}
+					failed = true
+					closeStream()
+					say("La transcripción de tu micrófono se interrumpió.", "off")
+				})
+		}
+		var openStream = function () {
+			if (stopped || failed || current || !media) return
+			var base = "/m/" + encodeURIComponent(d.room) + "/audio?stream=" + newStreamId() + "&start=" + Date.now() + "&seq="
+			var seq = 0
+			var rec = new MediaRecorder(media, { mimeType: mime, audioBitsPerSecond: 16000 })
+			rec.ondataavailable = function (ev) {
+				if (failed || !ev.data || !ev.data.size) return
+				var url = base + seq++
+				var blob = ev.data
+				queue = queue.then(function () { return upload(url, blob, 0) })
+			}
+			rec.start(15000)
+			current = {
+				rec: rec,
+				rotate: setTimeout(function () {
+					closeStream()
+					openStream()
+				}, 60 * 60 * 1000),
+			}
+			say("● Transcribiendo tu micrófono")
+		}
+		var closeStream = function () {
+			if (!current) return
+			clearTimeout(current.rotate)
+			if (current.rec.state !== "inactive") current.rec.stop()
+			current = null
+		}
 		var cleanup = function () {
 			stopped = true
+			closeStream()
+			if (media) media.getTracks().forEach(function (t) { t.stop() })
+			badge.remove()
 		}
 		say("Pidiendo permiso del micrófono para la transcripción…")
 		navigator.mediaDevices
 			.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 } })
 			.then(function (stream) {
+				media = stream
 				if (stopped) {
-					stream.getTracks().forEach(function (t) { t.stop() })
+					cleanup()
 					return
 				}
-				var track = stream.getAudioTracks()[0]
 				var setMuted = function (muted) {
-					track.enabled = !muted
-					say(muted ? "Micrófono silenciado: no se transcribe." : "● Transcribiendo tu micrófono", muted ? "muted" : "")
+					if (failed) return
+					if (muted) {
+						closeStream()
+						say("Micrófono silenciado: no se graba ni se transcribe.", "muted")
+					} else {
+						openStream()
+					}
 				}
 				api.isAudioMuted().then(setMuted)
 				api.addEventListener("audioMuteStatusChanged", function (e) {
 					setMuted(e.muted)
 				})
-
-				var id = new Uint8Array(18)
-				crypto.getRandomValues(id)
-				var streamId = btoa(String.fromCharCode.apply(null, id)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "")
-				var start = Date.now()
-				var url = "/m/" + encodeURIComponent(d.room) + "/audio?stream=" + streamId + "&start=" + start + "&seq="
-				var seq = 0
-				var queue = Promise.resolve()
-				var failed = false
-				var wait = function (ms) {
-					return new Promise(function (r) { setTimeout(r, ms) })
-				}
-				var upload = function (n, blob, attempt) {
-					return fetch(url + n, {
-						method: "POST",
-						headers: { "Content-Type": "audio/webm", "X-CSRF-Token": d.csrf },
-						body: blob,
-						credentials: "same-origin",
-						keepalive: blob.size < 60000,
-					})
-						.then(function (r) {
-							if (r.ok) return
-							if (r.status >= 500 && attempt < 3) return wait(2000 * (attempt + 1)).then(function () { return upload(n, blob, attempt + 1) })
-							throw new Error("upload " + r.status)
-						})
-						.catch(function (err) {
-							if (attempt < 3 && !(err && /upload/.test(err.message))) {
-								return wait(2000 * (attempt + 1)).then(function () { return upload(n, blob, attempt + 1) })
-							}
-							failed = true
-							say("La transcripción de tu micrófono se interrumpió.", "off")
-						})
-				}
-				var rec = new MediaRecorder(stream, { mimeType: mime, audioBitsPerSecond: 16000 })
-				rec.ondataavailable = function (ev) {
-					if (failed || !ev.data || !ev.data.size) return
-					var n = seq++
-					queue = queue.then(function () { return upload(n, ev.data, 0) })
-				}
-				rec.start(15000)
-				cleanup = function () {
-					stopped = true
-					if (rec.state !== "inactive") rec.stop()
-					track.stop()
-					badge.remove()
-				}
 				window.addEventListener("pagehide", cleanup)
 			})
 			.catch(function () {

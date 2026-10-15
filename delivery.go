@@ -82,6 +82,12 @@ type Recipient struct {
 func (db *DB) ProposedRecipients(m *Minutes) ([]Recipient, error) {
 	byEmail := map[string]*Recipient{}
 	start := m.MeetingAt.Add(-4 * time.Hour)
+	if runID, ok := strings.CutPrefix(m.SessionID, "captura-"); ok {
+		var started int64
+		if db.conn.QueryRow("SELECT started_at FROM capture_runs WHERE id = ?", runID).Scan(&started) == nil {
+			start = time.Unix(started, 0)
+		}
+	}
 
 	rows, err := db.conn.Query(
 		"SELECT email, display_name, joined_at FROM session_participants WHERE room_slug = ? AND session_id = ? AND source = 'jaas'",
@@ -242,6 +248,7 @@ type Mail struct {
 	ReplyTo     string
 	Subject     string
 	Text        string
+	HTML        string // optional alternative to Text
 	Attachments []Attachment
 }
 
@@ -350,13 +357,33 @@ func buildMIME(from, fromName string, m *Mail, now time.Time) ([]byte, error) {
 	h("Content-Type", `multipart/mixed; boundary="`+boundary+`"`)
 	b.WriteString("\r\n")
 
-	fmt.Fprintf(&b, "--%s\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: quoted-printable\r\n\r\n", boundary)
-	qp := quotedprintable.NewWriter(&b)
-	if _, err := qp.Write([]byte(strings.ReplaceAll(m.Text, "\n", "\r\n"))); err != nil {
-		return nil, err
+	writeQP := func(contentType, body string) error {
+		qp := quotedprintable.NewWriter(&b)
+		if _, err := qp.Write([]byte(strings.ReplaceAll(strings.ReplaceAll(body, "\r\n", "\n"), "\n", "\r\n"))); err != nil {
+			return err
+		}
+		qp.Close()
+		b.WriteString("\r\n")
+		return nil
 	}
-	qp.Close()
-	b.WriteString("\r\n")
+	if m.HTML == "" {
+		fmt.Fprintf(&b, "--%s\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: quoted-printable\r\n\r\n", boundary)
+		if err := writeQP("text/plain", m.Text); err != nil {
+			return nil, err
+		}
+	} else {
+		alt := randomHex(16)
+		fmt.Fprintf(&b, "--%s\r\nContent-Type: multipart/alternative; boundary=\"%s\"\r\n\r\n", boundary, alt)
+		fmt.Fprintf(&b, "--%s\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: quoted-printable\r\n\r\n", alt)
+		if err := writeQP("text/plain", m.Text); err != nil {
+			return nil, err
+		}
+		fmt.Fprintf(&b, "--%s\r\nContent-Type: text/html; charset=utf-8\r\nContent-Transfer-Encoding: quoted-printable\r\n\r\n", alt)
+		if err := writeQP("text/html", m.HTML); err != nil {
+			return nil, err
+		}
+		fmt.Fprintf(&b, "--%s--\r\n", alt)
+	}
 
 	for _, a := range m.Attachments {
 		fmt.Fprintf(&b, "--%s\r\nContent-Type: %s\r\nContent-Transfer-Encoding: base64\r\nContent-Disposition: attachment; filename=\"%s\"\r\n\r\n",
@@ -415,6 +442,7 @@ func (app *App) composeDelivery(d *delivery) (*Mail, error) {
 	fmt.Fprintf(&body, "Gracias por participar en la reunión %s del %s (hora del centro de México).\n\n", m.RoomSlug, when)
 	fmt.Fprintf(&body, "Adjuntamos la transcripción completa y la minuta. La minuta se generó con apoyo de inteligencia artificial a partir de la transcripción y %s la revisó antes de este envío. Si encuentras un error, responde a este correo.\n\n", reviewer)
 	fmt.Fprintf(&body, "RESUMEN\n%s\n\n", res.Summary)
+	fmt.Fprintf(&body, "SENTIMIENTO: %s. %s\n\n", res.Sentiment.Overall, res.Sentiment.Explanation)
 	if len(res.KeyPoints) > 0 {
 		body.WriteString("PUNTOS CLAVE\n")
 		for _, k := range res.KeyPoints {
@@ -439,11 +467,22 @@ func (app *App) composeDelivery(d *delivery) (*Mail, error) {
 	fmt.Fprintf(&body, "Adjuntos: transcripción (.txt) y minuta completa (.md).\n\n")
 	fmt.Fprintf(&body, "Aviso de privacidad: https://transgenia.org/legal-privacidad.html\n-- \nTransgenia\n")
 
+	subject := fmt.Sprintf("Transcripción y minuta: %s (%s)", m.RoomSlug, day)
+	html, err := renderEmail(minutesEmail, minutesEmailData{
+		Subject: subject, Preheader: firstSentence(res.Summary, 140), Eyebrow: "Minuta de reunión",
+		Closing: "Si algo no es exacto o falta un acuerdo, responde a este correo y lo corregimos.",
+		Room:    m.RoomSlug, When: meetingWhen(m.MeetingAt, loc), Name: name, Reviewer: reviewer,
+		R: &res, Metrics: res.Metrics,
+	})
+	if err != nil {
+		return nil, permanent("no se pudo armar el correo")
+	}
 	return &Mail{
 		To:      d.Email,
 		ReplyTo: normalizeEmail(d.ApprovedBy),
-		Subject: fmt.Sprintf("Transcripción y minuta: %s (%s)", m.RoomSlug, day),
+		Subject: subject,
 		Text:    body.String(),
+		HTML:    html,
 		Attachments: []Attachment{
 			{Name: "transcripcion-" + m.RoomSlug + "-" + day + ".txt", ContentType: "text/plain; charset=utf-8", Data: []byte(transcript)},
 			{Name: "minuta-" + m.RoomSlug + "-" + day + ".md", ContentType: "text/markdown; charset=utf-8", Data: []byte(minutesMarkdown(m, &res, loc))},
@@ -553,11 +592,23 @@ func (app *App) composeHostNotice(n *hostNotice) (*Mail, error) {
 		fmt.Fprintf(&b, "Hay %d participantes propuestos para recibir la copia.\n\n", pending)
 	}
 	b.WriteString("Nada se envía a los participantes hasta que lo apruebes en el panel. Este aviso no incluye contenido de la reunión.\n-- \nTransgenia Reuniones\n")
-	return &Mail{
-		To:      n.Email,
-		Subject: fmt.Sprintf("Minuta lista para revisar: %s (%s)", m.RoomSlug, m.MeetingAt.In(loc).Format("2006-01-02")),
-		Text:    b.String(),
-	}, nil
+	subject := fmt.Sprintf("Minuta lista para revisar: %s (%s)", m.RoomSlug, m.MeetingAt.In(loc).Format("2006-01-02"))
+	pendingText := "No hay participantes con correo registrados para esta reunión."
+	switch {
+	case pending == 1:
+		pendingText = "Hay 1 participante propuesto para recibir la copia."
+	case pending > 1:
+		pendingText = fmt.Sprintf("Hay %d participantes propuestos para recibir la copia.", pending)
+	}
+	html, err := renderEmail(hostEmail, hostEmailData{
+		Subject: subject, Preheader: "Revisa la minuta y aprueba a quién se envía.", Eyebrow: "Reuniones · aviso al anfitrión",
+		Closing: "Este aviso llega solo al anfitrión de la sala.",
+		Room:    m.RoomSlug, When: meetingWhen(m.MeetingAt, loc), Pending: pendingText, Link: link,
+	})
+	if err != nil {
+		return nil, permanent("no se pudo armar el aviso")
+	}
+	return &Mail{To: n.Email, Subject: subject, Text: b.String(), HTML: html}, nil
 }
 
 func (app *App) processHostNotification(ctx context.Context) bool {
