@@ -73,6 +73,13 @@ type Config struct {
 	MailFrom     string
 	MailFromName string
 
+	// How participant copies attribute the review and who signs them. The
+	// approving host's own address is never shown; replies go to MailReplyTo.
+	MailReviewer      string // e.g. "un administrador de Transgenia"
+	MailSignatureName string // e.g. "Aitana Yarandiz"
+	MailSignatureRole string // e.g. "Agente Quack IA de Transgenia"
+	MailReplyTo       string // e.g. admin@transgenia.org
+
 	// SecureCookies is false only for local development over plain HTTP.
 	SecureCookies bool
 }
@@ -295,6 +302,14 @@ func LoadConfig() (*Config, error) {
 			return nil, fmt.Errorf("MAIL_FROM must be a valid address when SMTP_HOST is set")
 		}
 		cfg.MailFromName = envDefault("MAIL_FROM_NAME", "Transgenia Reuniones")
+		cfg.MailReviewer = envDefault("MAIL_REVIEWER", "un administrador de Transgenia")
+		cfg.MailSignatureName = strings.TrimSpace(os.Getenv("MAIL_SIGNATURE_NAME"))
+		cfg.MailSignatureRole = strings.TrimSpace(os.Getenv("MAIL_SIGNATURE_ROLE"))
+		if v := strings.TrimSpace(os.Getenv("MAIL_REPLY_TO")); v != "" {
+			if cfg.MailReplyTo = normalizeEmail(v); cfg.MailReplyTo == "" {
+				return nil, fmt.Errorf("MAIL_REPLY_TO must be a valid address")
+			}
+		}
 	}
 
 	if (cfg.CFAccessTeamDomain == "") != (cfg.CFAccessAUD == "") {

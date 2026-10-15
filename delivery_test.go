@@ -202,8 +202,11 @@ func TestSendRequiresApprovalOwnershipAndList(t *testing.T) {
 		if mail.ReplyTo != "alice@transgenia.org" || !strings.Contains(mail.Subject, "alice-cliente-2026") {
 			t.Errorf("headers: to=%s reply=%s subject=%s", mail.To, mail.ReplyTo, mail.Subject)
 		}
-		if !strings.Contains(mail.Text, "Se revisó el avance") || !strings.Contains(mail.Text, "alice@transgenia.org la revisó") || !strings.Contains(mail.Text, "legal-privacidad") {
+		if !strings.Contains(mail.Text, "Se revisó el avance") || !strings.Contains(mail.Text, "un administrador de Transgenia la revisó") || !strings.Contains(mail.Text, "legal-privacidad") {
 			t.Errorf("body for %s missing summary, reviewer or privacy notice", mail.To)
+		}
+		if strings.Contains(mail.Text, "alice@transgenia.org") || strings.Contains(mail.HTML, "alice@transgenia.org") {
+			t.Errorf("copy names the approving host")
 		}
 		if len(mail.Attachments) != 2 || !strings.Contains(string(mail.Attachments[0].Data), "Pablo envía la propuesta") ||
 			!strings.Contains(string(mail.Attachments[1].Data), "| Enviar propuesta |") {
@@ -499,5 +502,35 @@ func TestEmailsEmbedAnimatedGEN(t *testing.T) {
 		if strings.Contains(mail.HTML, "http://") || regexp.MustCompile(`src="https?:`).MatchString(mail.HTML) {
 			t.Errorf("%s: remote image", mail.Subject)
 		}
+	}
+}
+
+func TestCopyAttributionAndSignature(t *testing.T) {
+	a, alice, csrf, m, fm := meetingWithParticipants(t)
+	a.app.Config.MailReviewer = "un administrador de Transgenia"
+	a.app.Config.MailSignatureName = "Aitana Yarandiz"
+	a.app.Config.MailSignatureRole = "Agente Quack IA de Transgenia"
+	a.app.Config.MailReplyTo = "admin@transgenia.org"
+	alice.do(http.MethodPost, "/admin/minutes/"+strconv.FormatInt(m.ID, 10)+"/send", url.Values{"csrf_token": {csrf}, "recipient": {"ana@cliente.example"}})
+	drain(a.testEnv)
+	c := fm.copies()[0]
+	if c.ReplyTo != "admin@transgenia.org" {
+		t.Errorf("reply-to %s", c.ReplyTo)
+	}
+	for _, body := range []string{c.Text, c.HTML} {
+		for _, want := range []string{"un administrador de Transgenia la revisó", "Aitana Yarandiz", "Agente Quack IA de Transgenia"} {
+			if !strings.Contains(body, want) {
+				t.Errorf("missing %q", want)
+			}
+		}
+		if strings.Contains(body, "alice@transgenia.org") {
+			t.Error("approving host named in the copy")
+		}
+	}
+	// The approver is still recorded for audit.
+	var approver string
+	a.app.DB.conn.QueryRow("SELECT approved_by FROM minutes_deliveries").Scan(&approver)
+	if approver != "alice@transgenia.org" {
+		t.Errorf("approved_by %q", approver)
 	}
 }

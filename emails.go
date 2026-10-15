@@ -114,6 +114,8 @@ const emailFrame = `{{define "head"}}<!doctype html>
 <tr><td style="padding:8px 32px 28px 32px;font-family:Inter,Arial,Helvetica,sans-serif;">
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr><td style="background-color:#EE7623;background-image:linear-gradient(90deg,#EE7623 0%,#F0A055 33%,#D8292F 72%,#D1333B 100%);font-size:0;line-height:0;height:2px;">&nbsp;</td></tr></table>
   <div style="font-size:13.5px;line-height:1.65;color:#3D3935;padding-top:16px;">{{.Closing}}</div>
+  {{with .SignatureName}}<div style="font-size:14px;font-weight:bold;color:#101820;padding-top:14px;">{{.}}</div>{{end}}
+  {{with .SignatureRole}}<div style="font-size:12.5px;color:#3D3935;">{{.}}</div>{{end}}
   <div style="font-size:11.5px;font-weight:bold;letter-spacing:2px;color:#D1333B;padding-top:12px;">TRANSGENIA · REUNIONES</div>
   <div style="font-size:12px;line-height:1.6;color:#3D3935;padding-top:4px;"><a href="https://transgenia.org" style="color:#3D3935;text-decoration:none;">transgenia.org</a> · <a href="https://transgenia.org/legal-privacidad.html" style="color:#D1333B;">Aviso de privacidad</a></div>
 </td></tr>
@@ -226,6 +228,7 @@ var (
 
 type minutesEmailData struct {
 	Subject, Preheader, Eyebrow, Closing string
+	SignatureName, SignatureRole         string
 	Room, When, Name, Reviewer           string
 	R                                    *MinutesResult
 	Metrics                              *ConversationMetrics
@@ -233,6 +236,7 @@ type minutesEmailData struct {
 
 type hostEmailData struct {
 	Subject, Preheader, Eyebrow, Closing string
+	SignatureName, SignatureRole         string
 	Room, When, Pending, Link            string
 }
 

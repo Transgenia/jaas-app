@@ -447,9 +447,16 @@ func (app *App) composeDelivery(d *delivery) (*Mail, error) {
 	if name == "" {
 		name = d.Email
 	}
-	reviewer := "el anfitrión"
-	if strings.Contains(d.ApprovedBy, "@") {
-		reviewer = d.ApprovedBy
+	// The copy never names the approving host: the review is attributed to a
+	// role ("un administrador de Transgenia") and replies go to a shared
+	// mailbox. Who approved stays in the delivery record for audit.
+	reviewer := app.Config.MailReviewer
+	if reviewer == "" {
+		reviewer = "un administrador de Transgenia"
+	}
+	replyTo := app.Config.MailReplyTo
+	if replyTo == "" {
+		replyTo = normalizeEmail(d.ApprovedBy)
 	}
 
 	var body strings.Builder
@@ -480,7 +487,14 @@ func (app *App) composeDelivery(d *delivery) (*Mail, error) {
 		body.WriteString("\n")
 	}
 	fmt.Fprintf(&body, "Adjuntos: transcripción (.txt) y minuta completa (.md).\n\n")
-	fmt.Fprintf(&body, "Aviso de privacidad: https://transgenia.org/legal-privacidad.html\n-- \nTransgenia\n")
+	fmt.Fprintf(&body, "Aviso de privacidad: https://transgenia.org/legal-privacidad.html\n-- \n")
+	if app.Config.MailSignatureName != "" {
+		fmt.Fprintf(&body, "%s\n", app.Config.MailSignatureName)
+		if app.Config.MailSignatureRole != "" {
+			fmt.Fprintf(&body, "%s\n", app.Config.MailSignatureRole)
+		}
+	}
+	body.WriteString("Transgenia\n")
 
 	subject := fmt.Sprintf("Transcripción y minuta: %s (%s)", m.RoomSlug, day)
 	html, err := renderEmail(minutesEmail, minutesEmailData{
@@ -488,13 +502,14 @@ func (app *App) composeDelivery(d *delivery) (*Mail, error) {
 		Closing: "Si algo no es exacto o falta un acuerdo, responde a este correo y lo corregimos.",
 		Room:    m.RoomSlug, When: meetingWhen(m.MeetingAt, loc), Name: name, Reviewer: reviewer,
 		R: &res, Metrics: res.Metrics,
+		SignatureName: app.Config.MailSignatureName, SignatureRole: app.Config.MailSignatureRole,
 	})
 	if err != nil {
 		return nil, permanent("no se pudo armar el correo")
 	}
 	return &Mail{
 		To:      d.Email,
-		ReplyTo: normalizeEmail(d.ApprovedBy),
+		ReplyTo: replyTo,
 		Subject: subject,
 		Text:    body.String(),
 		HTML:    html,
