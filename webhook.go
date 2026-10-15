@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
@@ -21,7 +22,25 @@ import (
 
 // --- signature (https://developer.8x8.com/jaas/docs/webhooks-signatures/) ---
 
-var errBadSignature = errors.New("invalid webhook signature")
+var (
+	errBadSignature = errors.New("invalid webhook signature")
+	errSigMissing   = fmt.Errorf("%w: missing or malformed header", errBadSignature)
+	errSigStale     = fmt.Errorf("%w: timestamp outside tolerance", errBadSignature)
+	errSigMismatch  = fmt.Errorf("%w: signature mismatch", errBadSignature)
+)
+
+// sigReason is a short, non-sensitive label for logs.
+func sigReason(err error) string {
+	switch {
+	case errors.Is(err, errSigStale):
+		return "stale timestamp"
+	case errors.Is(err, errSigMissing):
+		return "missing header"
+	case errors.Is(err, errSigMismatch):
+		return "mismatch"
+	}
+	return "invalid"
+}
 
 // verifyJaaSSignature checks X-Jaas-Signature: "t=<unix>,v1=<base64>[,v1=...]".
 // The signed payload is "<t>.<raw body>", HMAC-SHA256 with the endpoint
@@ -29,7 +48,7 @@ var errBadSignature = errors.New("invalid webhook signature")
 // protection) and the timestamp must be within tolerance (replay protection).
 func verifyJaaSSignature(header string, body, secret []byte, tolerance time.Duration, now time.Time) error {
 	if header == "" || len(secret) == 0 {
-		return errBadSignature
+		return errSigMissing
 	}
 	var ts string
 	var sigs []string
@@ -46,14 +65,14 @@ func verifyJaaSSignature(header string, body, secret []byte, tolerance time.Dura
 		}
 	}
 	if ts == "" || len(sigs) == 0 {
-		return errBadSignature
+		return errSigMissing
 	}
 	sec, err := strconv.ParseInt(ts, 10, 64)
 	if err != nil {
-		return errBadSignature
+		return errSigMissing
 	}
 	if d := now.Sub(time.Unix(sec, 0)); d > tolerance || d < -tolerance {
-		return fmt.Errorf("%w: timestamp outside tolerance", errBadSignature)
+		return errSigStale
 	}
 	mac := hmac.New(sha256.New, secret)
 	mac.Write([]byte(ts))
@@ -65,7 +84,7 @@ func verifyJaaSSignature(header string, body, secret []byte, tolerance time.Dura
 			return nil
 		}
 	}
-	return errBadSignature
+	return errSigMismatch
 }
 
 // --- download URL policy (SSRF) ---
@@ -216,20 +235,103 @@ func (e *httpStatusError) Permanent() bool {
 // --- webhook handler ---
 
 type jaasWebhook struct {
-	IdempotencyKey string `json:"idempotencyKey"`
-	AppID          string `json:"appId"`
-	EventType      string `json:"eventType"`
-	SessionID      string `json:"sessionId"`
-	Timestamp      int64  `json:"timestamp"`
-	FQN            string `json:"fqn"`
+	IdempotencyKey string
+	AppID          string
+	EventType      string
+	SessionID      string
+	Timestamp      int64
+	FQN            string
 	Data           struct {
-		PreAuthenticatedLink string `json:"preAuthenticatedLink"`
-		DurationSec          int    `json:"durationSec"`
-		LinkExpiration       int64  `json:"linkExpiration"`
-		Name                 string `json:"name"`
-		Email                string `json:"email"`
-		Moderator            bool   `json:"moderator"`
-	} `json:"data"`
+		PreAuthenticatedLink string
+		DurationSec          int
+		LinkExpiration       int64
+		Name                 string
+		Email                string
+		Moderator            bool
+	}
+}
+
+// Events the service acts on; everything else is acknowledged and ignored.
+var actionableEvents = map[string]bool{
+	"TRANSCRIPTION_UPLOADED": true,
+	"RECORDING_UPLOADED":     true,
+	"PARTICIPANT_JOINED":     true,
+}
+
+// JaaS payloads are not strictly typed across event types and releases
+// (numbers sometimes arrive as strings or with decimals, flags as strings),
+// so fields are read leniently instead of failing the whole event.
+func jsonStr(v any) string {
+	switch t := v.(type) {
+	case string:
+		return strings.TrimSpace(t)
+	case json.Number:
+		return t.String()
+	case bool:
+		return strconv.FormatBool(t)
+	}
+	return ""
+}
+
+func jsonInt(v any) int64 {
+	switch t := v.(type) {
+	case json.Number:
+		if n, err := t.Int64(); err == nil {
+			return n
+		}
+		if f, err := t.Float64(); err == nil {
+			return int64(f)
+		}
+	case string:
+		if f, err := strconv.ParseFloat(strings.TrimSpace(t), 64); err == nil {
+			return int64(f)
+		}
+	}
+	return 0
+}
+
+func jsonBool(v any) bool {
+	switch t := v.(type) {
+	case bool:
+		return t
+	case string:
+		b, _ := strconv.ParseBool(strings.TrimSpace(t))
+		return b
+	case json.Number:
+		return jsonInt(t) != 0
+	}
+	return false
+}
+
+// parseJaaSWebhook returns a reason (safe to log: no values) when the body
+// is not a usable JSON object.
+func parseJaaSWebhook(body []byte) (*jaasWebhook, string) {
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.UseNumber()
+	var top map[string]any
+	if err := dec.Decode(&top); err != nil || top == nil {
+		return nil, "not a JSON object"
+	}
+	ev := &jaasWebhook{
+		IdempotencyKey: jsonStr(top["idempotencyKey"]),
+		AppID:          jsonStr(top["appId"]),
+		EventType:      jsonStr(top["eventType"]),
+		SessionID:      jsonStr(top["sessionId"]),
+		Timestamp:      jsonInt(top["timestamp"]),
+		FQN:            jsonStr(top["fqn"]),
+	}
+	if data, ok := top["data"].(map[string]any); ok {
+		ev.Data.PreAuthenticatedLink = jsonStr(data["preAuthenticatedLink"])
+		ev.Data.DurationSec = int(jsonInt(data["durationSec"]))
+		ev.Data.LinkExpiration = jsonInt(data["linkExpiration"])
+		ev.Data.Name = jsonStr(data["name"])
+		ev.Data.Email = jsonStr(data["email"])
+		ev.Data.Moderator = jsonBool(data["moderator"])
+	}
+	if ev.EventType == "" {
+		return nil, "missing eventType"
+	}
+	return ev, ""
 }
 
 // handleRecordingWebhook accepts JaaS events. It answers 2xx only once the
@@ -243,14 +345,27 @@ func (app *App) handleRecordingWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := verifyJaaSSignature(r.Header.Get("X-Jaas-Signature"), body, app.Config.WebhookSecret,
 		app.Config.WebhookTolerance, app.now()); err != nil {
-		slog.Warn("webhook: rejected", "reason", "signature", "ip", app.clientIP(r))
+		slog.Warn("webhook: rejected", "reason", "signature: "+sigReason(err), "ip", app.clientIP(r))
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
 
-	var ev jaasWebhook
-	if err := json.Unmarshal(body, &ev); err != nil || ev.IdempotencyKey == "" || ev.EventType == "" {
-		slog.Warn("webhook: rejected", "reason", "payload")
+	ev, reason := parseJaaSWebhook(body)
+	if ev == nil {
+		slog.Warn("webhook: rejected", "reason", "payload: "+reason, "bytes", len(body))
+		http.Error(w, "Bad Request", http.StatusBadRequest)
+		return
+	}
+	if !actionableEvents[ev.EventType] {
+		// Signed and well formed, but nothing to do: acknowledge so JaaS
+		// does not retry it.
+		_, slug, _ := strings.Cut(ev.FQN, "/")
+		slog.Info("webhook: event", "event", ev.EventType, "room", slug)
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	if ev.IdempotencyKey == "" {
+		slog.Warn("webhook: rejected", "reason", "payload: missing idempotencyKey", "event", ev.EventType)
 		http.Error(w, "Bad Request", http.StatusBadRequest)
 		return
 	}
@@ -286,7 +401,7 @@ func (app *App) handleRecordingWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := app.applyWebhook(&ev, slug); err != nil {
+	if err := app.applyWebhook(ev, slug); err != nil {
 		// Let JaaS retry this delivery: forget the key so the retry is not
 		// mistaken for a duplicate.
 		app.DB.ForgetWebhookEvent(ev.IdempotencyKey)

@@ -221,3 +221,67 @@ func TestWebhookStoresRecording(t *testing.T) {
 		t.Error("pre-authenticated link leaked to logs")
 	}
 }
+
+func TestWebhookTolerantPayloads(t *testing.T) {
+	e := newTestEnv(t)
+	e.app.DB.CreateRoom("sala-prueba", "x", "")
+	fqn := testAppID + "/sala-prueba"
+	cases := map[string]string{
+		// numbers as strings / with decimals, flags as strings
+		"string timestamp": `{"idempotencyKey":"a1","appId":"` + testAppID + `","eventType":"TRANSCRIPTION_UPLOADED","sessionId":"s1","timestamp":"1760464800000","fqn":"` + fqn + `","data":{"preAuthenticatedLink":"` + testLink + `"}}`,
+		"float duration":   `{"idempotencyKey":"a2","appId":"` + testAppID + `","eventType":"RECORDING_UPLOADED","sessionId":"s1","timestamp":1.7604648e12,"fqn":"` + fqn + `","data":{"preAuthenticatedLink":"` + testLink + `","durationSec":15.5,"linkExpiration":"1792087200000","participants":[{"name":"A"}]}}`,
+		"string moderator": `{"idempotencyKey":"a3","appId":"` + testAppID + `","eventType":"PARTICIPANT_JOINED","sessionId":"s1","timestamp":1760464800000,"fqn":"` + fqn + `","data":{"name":"Ana","email":"ana@cliente.example","moderator":"true","id":123}}`,
+		// events we do not act on: acknowledged even without the usual fields
+		"unknown, no key":   `{"eventType":"TRANSCRIPTION_CHUNK_RECEIVED","fqn":"` + fqn + `","data":{"final":"hola","participant":{"name":"A"}}}`,
+		"unknown data type": `{"idempotencyKey":"a5","eventType":"USAGE","fqn":"` + fqn + `","data":[1,2,3]}`,
+	}
+	for name, body := range cases {
+		if rr := e.signedWebhook(body); rr.Code != http.StatusOK {
+			t.Errorf("%s: %d", name, rr.Code)
+		}
+	}
+	if n, _ := e.app.DB.CountMinutesForSession("sala-prueba", "s1"); n != 1 {
+		t.Errorf("transcription with string timestamp not queued: %d", n)
+	}
+	if recs, _ := e.app.DB.ListRecordings("sala-prueba"); len(recs) != 1 || recs[0].DurationSec != 15 {
+		t.Errorf("recording with float duration: %+v", recs)
+	}
+	var mod bool
+	e.app.DB.conn.QueryRow("SELECT moderator FROM session_participants WHERE source = 'jaas'").Scan(&mod)
+	if !mod {
+		t.Error("string moderator flag not read")
+	}
+	// Still rejected: not JSON, no eventType, actionable without idempotencyKey.
+	for name, body := range map[string]string{
+		"not json":       `hola`,
+		"no eventType":   `{"idempotencyKey":"b1"}`,
+		"actionable/key": `{"eventType":"TRANSCRIPTION_UPLOADED","fqn":"` + fqn + `"}`,
+	} {
+		if rr := e.signedWebhook(body); rr.Code != http.StatusBadRequest {
+			t.Errorf("%s: %d", name, rr.Code)
+		}
+	}
+	if !strings.Contains(e.logs.String(), "payload: missing idempotencyKey") || strings.Contains(e.logs.String(), "hola") {
+		t.Error("rejection reasons not logged safely")
+	}
+}
+
+// JaaS retries keep the signature timestamp of the first attempt.
+func TestWebhookRetryWithOriginalTimestamp(t *testing.T) {
+	e := newTestEnv(t)
+	e.app.Config.WebhookTolerance = 24 * time.Hour
+	e.app.DB.CreateRoom("sala-prueba", "x", "")
+	body := eventJSON("TRANSCRIPTION_UPLOADED", "k1", "s1", "sala-prueba", testLink)
+	sig := signBody(testSecret, body, e.now)
+	e.advance(7 * time.Minute)
+	if rr := e.postWebhook(body, sig); rr.Code != http.StatusOK {
+		t.Fatalf("retry 7 min later: %d", rr.Code)
+	}
+	if rr := e.postWebhook(body, sig); rr.Code != http.StatusOK || !strings.Contains(e.logs.String(), "webhook: duplicate") {
+		t.Fatal("replay not de-duplicated")
+	}
+	e.advance(25 * time.Hour)
+	if rr := e.postWebhook(body, sig); rr.Code != http.StatusUnauthorized || !strings.Contains(e.logs.String(), "signature: stale timestamp") {
+		t.Fatalf("day-old signature: %d", rr.Code)
+	}
+}

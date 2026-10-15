@@ -224,7 +224,10 @@ func LoadConfig() (*Config, error) {
 	}
 	cfg.WebhookSecret = []byte(webhookSecret)
 
-	tolerance, err := envInt("WEBHOOK_TOLERANCE_SECONDS", 300)
+	// JaaS retries a failed delivery with its original signature timestamp,
+	// so the window must cover the retry schedule. Replays inside it are
+	// harmless: actionable events are de-duplicated by idempotencyKey.
+	tolerance, err := envInt("WEBHOOK_TOLERANCE_SECONDS", 86400)
 	if err != nil {
 		return nil, err
 	}
