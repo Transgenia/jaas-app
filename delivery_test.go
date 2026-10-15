@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"errors"
+	"image/gif"
 	"io"
 	"mime"
 	"mime/multipart"
@@ -420,8 +422,11 @@ func TestMinutesEmailHTML(t *testing.T) {
 			t.Errorf("colour outside the palette: %s", c)
 		}
 	}
-	if strings.Contains(h, "<img") || strings.Contains(h, "<style") || strings.Contains(h, "—") {
+	if regexp.MustCompile(`<img[^>]+src="(https?:)?//`).MatchString(h) || strings.Contains(h, "<style") || strings.Contains(h, "—") {
 		t.Error("remote image, <style> block or long dash in the e-mail")
+	}
+	if n := strings.Count(h, "<img"); n != 1 || !strings.Contains(h, `src="cid:`) {
+		t.Errorf("expected exactly one embedded (cid) image, got %d", n)
 	}
 	// Orange is never used as a text colour on a light background.
 	if regexp.MustCompile(`[^-]color:#EE7623`).MatchString(strings.ReplaceAll(h, "background-color:#EE7623", "")) &&
@@ -464,5 +469,35 @@ func TestComputeMetrics(t *testing.T) {
 	us[0].Duration, us[1].Duration, us[2].Duration = 0, 0, 0
 	if computeMetrics(us).Measured {
 		t.Error("estimated metrics flagged as measured")
+	}
+}
+
+func TestEmailsEmbedAnimatedGEN(t *testing.T) {
+	a, alice, csrf, m, fm := meetingWithParticipants(t)
+	alice.do(http.MethodPost, "/admin/minutes/"+strconv.FormatInt(m.ID, 10)+"/send", url.Values{"csrf_token": {csrf}, "recipient": {"ana@cliente.example"}})
+	drain(a.testEnv)
+	for _, mail := range append(fm.copies(), fm.notices()...) {
+		if !strings.Contains(mail.HTML, `src="cid:gen-analiza@transgenia.org"`) || !strings.Contains(mail.HTML, `alt="GEN, la mascota de Transgenia`) {
+			t.Fatalf("%s: GEN not referenced", mail.Subject)
+		}
+		if len(mail.Inline) != 1 || mail.Inline[0].ContentID != "gen-analiza@transgenia.org" {
+			t.Fatalf("%s: GEN not attached inline", mail.Subject)
+		}
+		g, err := gif.DecodeAll(bytes.NewReader(mail.Inline[0].Data))
+		if err != nil || len(g.Image) < 20 || g.Config.Width != 336 || g.Config.Height != 168 || g.LoopCount != 0 {
+			t.Fatalf("GEN gif: err=%v frames=%d", err, len(g.Image))
+		}
+		raw, err := buildMIME("contacto@transgenia.org", "Transgenia Reuniones", mail, time.Now())
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, want := range []string{"multipart/related", "Content-ID: <gen-analiza@transgenia.org>", "Content-Disposition: inline", "image/gif"} {
+			if !strings.Contains(string(raw), want) {
+				t.Errorf("%s: MIME lacks %q", mail.Subject, want)
+			}
+		}
+		if strings.Contains(mail.HTML, "http://") || regexp.MustCompile(`src="https?:`).MatchString(mail.HTML) {
+			t.Errorf("%s: remote image", mail.Subject)
+		}
 	}
 }

@@ -241,6 +241,7 @@ type Attachment struct {
 	Name        string
 	ContentType string
 	Data        []byte
+	ContentID   string // set for images shown inside the HTML (cid:...)
 }
 
 type Mail struct {
@@ -248,7 +249,8 @@ type Mail struct {
 	ReplyTo     string
 	Subject     string
 	Text        string
-	HTML        string // optional alternative to Text
+	HTML        string       // optional alternative to Text
+	Inline      []Attachment // images referenced by the HTML as cid:<ContentID>
 	Attachments []Attachment
 }
 
@@ -372,8 +374,11 @@ func buildMIME(from, fromName string, m *Mail, now time.Time) ([]byte, error) {
 			return nil, err
 		}
 	} else {
+		// mixed > related > (alternative > text, html) + inline images
+		rel := randomHex(16)
+		fmt.Fprintf(&b, "--%s\r\nContent-Type: multipart/related; type=\"multipart/alternative\"; boundary=\"%s\"\r\n\r\n", boundary, rel)
 		alt := randomHex(16)
-		fmt.Fprintf(&b, "--%s\r\nContent-Type: multipart/alternative; boundary=\"%s\"\r\n\r\n", boundary, alt)
+		fmt.Fprintf(&b, "--%s\r\nContent-Type: multipart/alternative; boundary=\"%s\"\r\n\r\n", rel, alt)
 		fmt.Fprintf(&b, "--%s\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: quoted-printable\r\n\r\n", alt)
 		if err := writeQP("text/plain", m.Text); err != nil {
 			return nil, err
@@ -383,20 +388,30 @@ func buildMIME(from, fromName string, m *Mail, now time.Time) ([]byte, error) {
 			return nil, err
 		}
 		fmt.Fprintf(&b, "--%s--\r\n", alt)
+		for _, img := range m.Inline {
+			fmt.Fprintf(&b, "--%s\r\nContent-Type: %s\r\nContent-Transfer-Encoding: base64\r\nContent-ID: <%s>\r\nContent-Disposition: inline; filename=\"%s\"\r\n\r\n",
+				rel, img.ContentType, img.ContentID, img.Name)
+			writeBase64(&b, img.Data)
+		}
+		fmt.Fprintf(&b, "--%s--\r\n", rel)
 	}
 
 	for _, a := range m.Attachments {
 		fmt.Fprintf(&b, "--%s\r\nContent-Type: %s\r\nContent-Transfer-Encoding: base64\r\nContent-Disposition: attachment; filename=\"%s\"\r\n\r\n",
 			boundary, a.ContentType, a.Name)
-		enc := base64.StdEncoding.EncodeToString(a.Data)
-		for len(enc) > 76 {
-			b.WriteString(enc[:76] + "\r\n")
-			enc = enc[76:]
-		}
-		b.WriteString(enc + "\r\n")
+		writeBase64(&b, a.Data)
 	}
 	fmt.Fprintf(&b, "--%s--\r\n", boundary)
 	return b.Bytes(), nil
+}
+
+func writeBase64(b *bytes.Buffer, data []byte) {
+	enc := base64.StdEncoding.EncodeToString(data)
+	for len(enc) > 76 {
+		b.WriteString(enc[:76] + "\r\n")
+		enc = enc[76:]
+	}
+	b.WriteString(enc + "\r\n")
 }
 
 func randomHex(n int) string {
@@ -483,6 +498,7 @@ func (app *App) composeDelivery(d *delivery) (*Mail, error) {
 		Subject: subject,
 		Text:    body.String(),
 		HTML:    html,
+		Inline:  genInline(),
 		Attachments: []Attachment{
 			{Name: "transcripcion-" + m.RoomSlug + "-" + day + ".txt", ContentType: "text/plain; charset=utf-8", Data: []byte(transcript)},
 			{Name: "minuta-" + m.RoomSlug + "-" + day + ".md", ContentType: "text/markdown; charset=utf-8", Data: []byte(minutesMarkdown(m, &res, loc))},
@@ -608,7 +624,7 @@ func (app *App) composeHostNotice(n *hostNotice) (*Mail, error) {
 	if err != nil {
 		return nil, permanent("no se pudo armar el aviso")
 	}
-	return &Mail{To: n.Email, Subject: subject, Text: b.String(), HTML: html}, nil
+	return &Mail{To: n.Email, Subject: subject, Text: b.String(), HTML: html, Inline: genInline()}, nil
 }
 
 func (app *App) processHostNotification(ctx context.Context) bool {

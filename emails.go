@@ -25,7 +25,23 @@ const (
 	cWarm    = "#3D3935"
 )
 
+// GEN analysing a meeting (tools/gen_analiza.py), embedded in the message
+// as a cid: image, never loaded from the network. Clients that block images
+// show the alt text; Outlook desktop shows the first frame.
+const genContentID = "gen-analiza@transgenia.org"
+
+func genInline() []Attachment {
+	data, err := staticFS.ReadFile("static/gen-analiza.gif")
+	if err != nil {
+		return nil
+	}
+	return []Attachment{{Name: "gen-analiza.gif", ContentType: "image/gif", Data: data, ContentID: genContentID}}
+}
+
+const genImg = `<img src="cid:gen-analiza@transgenia.org" width="168" height="84" alt="GEN, la mascota de Transgenia, analizando la reunión" style="display:block;border:0;outline:none;text-decoration:none;width:168px;height:84px;">`
+
 var emailFuncs = template.FuncMap{
+	"gen": func() template.HTML { return template.HTML(genImg) },
 	"pill": func(v string) template.CSS {
 		bg := cNavy
 		switch v {
@@ -105,8 +121,13 @@ const emailFrame = `{{define "head"}}<!doctype html>
 </table></td></tr></table></body></html>{{end}}`
 
 const minutesEmailTmpl = `{{template "head" .}}
-<div style="font-size:20px;font-weight:bold;line-height:1.3;color:#101820;">{{.Room}}</div>
-<div style="font-size:13.5px;line-height:1.65;color:#3D3935;padding-top:4px;">{{.When}} (hora del centro de México){{with .Metrics}} · {{dur .DurationSeconds}}{{end}}</div>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr>
+<td valign="middle" style="font-family:Inter,Arial,Helvetica,sans-serif;">
+  <div style="font-size:20px;font-weight:bold;line-height:1.3;color:#101820;">{{.Room}}</div>
+  <div style="font-size:13.5px;line-height:1.65;color:#3D3935;padding-top:4px;">{{.When}} (hora del centro de México){{with .Metrics}} · {{dur .DurationSeconds}}{{end}}</div>
+</td>
+<td width="168" align="right" valign="middle" style="width:168px;padding-left:12px;">{{gen}}</td>
+</tr></table>
 <div style="font-size:14.5px;line-height:1.7;color:#101820;padding-top:18px;">Hola {{.Name}}:</div>
 <div style="font-size:14.5px;line-height:1.7;color:#101820;padding-top:8px;">Gracias por participar. Te compartimos la minuta y la transcripción completa (adjunta). La minuta se generó con apoyo de inteligencia artificial a partir de lo que se dijo en la reunión y {{.Reviewer}} la revisó antes de este envío. Si algo no es exacto, responde a este correo.</div>
 
@@ -182,7 +203,10 @@ const minutesEmailTmpl = `{{template "head" .}}
 {{template "foot" .}}`
 
 const hostNoticeTmpl = `{{template "head" .}}
-<div style="font-size:20px;font-weight:bold;line-height:1.3;color:#101820;">Tu minuta está lista para revisar</div>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr>
+<td valign="middle" style="font-family:Inter,Arial,Helvetica,sans-serif;font-size:20px;font-weight:bold;line-height:1.3;color:#101820;">Tu minuta está lista para revisar</td>
+<td width="168" align="right" valign="middle" style="width:168px;padding-left:12px;">{{gen}}</td>
+</tr></table>
 <div style="font-size:14.5px;line-height:1.7;color:#101820;padding-top:12px;">La reunión <strong>{{.Room}}</strong> del {{.When}} (hora del centro de México) ya tiene transcripción y minuta.</div>
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top:16px;"><tr>
   <td width="4" style="width:4px;background-color:#EE7623;font-size:0;line-height:0;">&nbsp;</td>
