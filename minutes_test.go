@@ -69,7 +69,13 @@ func TestWorkerProducesOneDraftPerSession(t *testing.T) {
 	if page.Code != http.StatusOK || !strings.Contains(page.Body.String(), "Borrador generado automáticamente") || !strings.Contains(page.Body.String(), "Enviar propuesta") {
 		t.Fatalf("minutes page: %d", page.Code)
 	}
+	if !strings.Contains(page.Body.String(), "Migración a Odoo 18") || !strings.Contains(page.Body.String(), "Tono de la reunión") {
+		t.Fatal("key points or sentiment missing from the minutes page")
+	}
 	md := b.do(http.MethodGet, "/admin/minutes/"+itoa(m.ID)+"/download", nil)
+	if !strings.Contains(md.Body.String(), "## Puntos clave") || !strings.Contains(md.Body.String(), "**positivo.**") {
+		t.Fatalf("markdown sections: %s", md.Body.String())
+	}
 	if !strings.Contains(md.Header().Get("Content-Disposition"), ".md") || !strings.Contains(md.Body.String(), "| Enviar propuesta | Pablo | 2026-10-16 | high |") {
 		t.Fatalf("markdown: %s", md.Body.String())
 	}
@@ -189,18 +195,21 @@ func TestValidateMinutes(t *testing.T) {
 	}
 	item := func(m map[string]any) map[string]any { return m["action_items"].([]any)[0].(map[string]any) }
 	bad := map[string][]byte{
-		"not json":         []byte("hola"),
-		"missing risks":    mutate(func(m map[string]any) { delete(m, "risks") }),
-		"extra key":        mutate(func(m map[string]any) { m["send_email_to"] = "x@y.z" }),
-		"empty summary":    mutate(func(m map[string]any) { m["summary"] = " " }),
-		"wrong language":   mutate(func(m map[string]any) { m["language"] = "en" }),
-		"bad date":         mutate(func(m map[string]any) { item(m)["due_date"] = "viernes" }),
-		"bad confidence":   mutate(func(m map[string]any) { item(m)["confidence"] = "certain" }),
-		"missing evidence": mutate(func(m map[string]any) { delete(item(m), "evidence") }),
-		"null list":        mutate(func(m map[string]any) { m["risks"] = nil }),
-		"empty task":       mutate(func(m map[string]any) { item(m)["task"] = "" }),
-		"owner wrong type": mutate(func(m map[string]any) { item(m)["owner"] = 7 }),
-		"extra item key":   mutate(func(m map[string]any) { item(m)["assign_in_odoo"] = true }),
+		"not json":           []byte("hola"),
+		"missing risks":      mutate(func(m map[string]any) { delete(m, "risks") }),
+		"extra key":          mutate(func(m map[string]any) { m["send_email_to"] = "x@y.z" }),
+		"empty summary":      mutate(func(m map[string]any) { m["summary"] = " " }),
+		"wrong language":     mutate(func(m map[string]any) { m["language"] = "en" }),
+		"bad date":           mutate(func(m map[string]any) { item(m)["due_date"] = "viernes" }),
+		"bad confidence":     mutate(func(m map[string]any) { item(m)["confidence"] = "certain" }),
+		"missing evidence":   mutate(func(m map[string]any) { delete(item(m), "evidence") }),
+		"null list":          mutate(func(m map[string]any) { m["risks"] = nil }),
+		"empty task":         mutate(func(m map[string]any) { item(m)["task"] = "" }),
+		"owner wrong type":   mutate(func(m map[string]any) { item(m)["owner"] = 7 }),
+		"extra item key":     mutate(func(m map[string]any) { item(m)["assign_in_odoo"] = true }),
+		"missing key_points": mutate(func(m map[string]any) { delete(m, "key_points") }),
+		"bad sentiment":      mutate(func(m map[string]any) { m["sentiment"].(map[string]any)["overall"] = "feliz" }),
+		"sentiment no expl":  mutate(func(m map[string]any) { delete(m["sentiment"].(map[string]any), "explanation") }),
 	}
 	for name, raw := range bad {
 		if _, err := validateMinutes(raw); err == nil {

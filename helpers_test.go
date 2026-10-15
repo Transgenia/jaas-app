@@ -51,6 +51,8 @@ func (f *fakeTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 
 const validMinutesJSON = `{
   "summary": "Se revisó el avance del proyecto Odoo IA y se acordaron los siguientes pasos.",
+  "key_points": ["Migración a Odoo 18", "Datos del cliente pendientes"],
+  "sentiment": {"overall": "positivo", "explanation": "El equipo coincidió en el plan y en las fechas."},
   "decisions": [{"decision": "Usar Odoo 18", "context": "Compatibilidad con módulos actuales"}],
   "action_items": [{"task": "Enviar propuesta", "owner": "Pablo", "due_date": "2026-10-16", "evidence": "Ana: Pablo envía la propuesta el viernes", "confidence": "high"},
                    {"task": "Revisar inventario", "owner": null, "due_date": null, "evidence": "Ana: alguien revise inventario", "confidence": "low"}],

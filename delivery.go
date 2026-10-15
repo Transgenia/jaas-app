@@ -402,6 +402,13 @@ func (app *App) composeDelivery(d *delivery) (*Mail, error) {
 	fmt.Fprintf(&body, "Gracias por participar en la reunión %s del %s (hora del centro de México).\n\n", m.RoomSlug, when)
 	fmt.Fprintf(&body, "Adjuntamos la transcripción completa y la minuta. La minuta se generó con apoyo de inteligencia artificial a partir de la transcripción y %s la revisó antes de este envío. Si encuentras un error, responde a este correo.\n\n", reviewer)
 	fmt.Fprintf(&body, "RESUMEN\n%s\n\n", res.Summary)
+	if len(res.KeyPoints) > 0 {
+		body.WriteString("PUNTOS CLAVE\n")
+		for _, k := range res.KeyPoints {
+			fmt.Fprintf(&body, "- %s\n", k)
+		}
+		body.WriteString("\n")
+	}
 	if len(res.ActionItems) > 0 {
 		body.WriteString("TAREAS\n")
 		for _, it := range res.ActionItems {

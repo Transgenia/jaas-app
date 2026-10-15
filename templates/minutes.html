@@ -21,6 +21,10 @@
 			</div>
 			<h2>Resumen</h2>
 			<p>{{.R.Summary}}</p>
+			{{if .R.KeyPoints}}<h2>Puntos clave</h2>
+			<ul>{{range .R.KeyPoints}}<li>{{.}}</li>{{end}}</ul>{{end}}
+			{{with .R.Sentiment.Overall}}<h2>Tono de la reunión</h2>
+			<p><span class="badge {{if eq . "positivo"}}ok{{else if eq . "negativo"}}bad{{else}}warn{{end}}">{{.}}</span> {{$.R.Sentiment.Explanation}}</p>{{end}}
 			<h2>Decisiones</h2>
 			{{if .R.Decisions}}<ul>{{range .R.Decisions}}<li><strong>{{.Decision}}</strong> — {{.Context}}</li>{{end}}</ul>{{else}}<p class="muted">Sin decisiones explícitas.</p>{{end}}
 			<h2>Tareas</h2>
