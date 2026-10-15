@@ -494,7 +494,7 @@ func (app *App) composeDelivery(d *delivery) (*Mail, error) {
 			fmt.Fprintf(&body, "%s\n", app.Config.MailSignatureRole)
 		}
 	}
-	body.WriteString("Transgenia\n")
+	body.WriteString("Transgenia: IA aplicada\n")
 
 	subject := fmt.Sprintf("Transcripción y minuta: %s (%s)", m.RoomSlug, day)
 	html, err := renderEmail(minutesEmail, minutesEmailData{

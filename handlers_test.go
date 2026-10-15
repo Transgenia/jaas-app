@@ -521,3 +521,28 @@ func TestMeetingsLastUpTo24Hours(t *testing.T) {
 		t.Fatal("room still active after 25 h")
 	}
 }
+
+func TestTransgeniaBrandEverywhere(t *testing.T) {
+	e := newTestEnv(t)
+	b, csrf := e.loginAdmin()
+	e.createRoom(b, csrf, "sala-marca")
+	host := e.browser()
+	tok := hidden(t, host.do(http.MethodGet, "/m/sala-marca", nil).Body.String(), "form_token")
+	host.do(http.MethodPost, "/m/sala-marca/join", url.Values{"form_token": {tok}, "display_name": {"Ana"}, "email": {"ana@cliente.example"}, "consent": {"on"}, "host_password": {"anfitrion-secreto"}})
+	meeting := host.do(http.MethodGet, "/m/sala-marca", nil).Body.String()
+	if !strings.Contains(meeting, `class="brand-overlay"`) || !strings.Contains(meeting, "transgenia-logo-alt.png?v=") || !strings.Contains(meeting, "IA aplicada") {
+		t.Error("meeting page lacks the Transgenia logo overlay")
+	}
+	for name, page := range map[string]string{
+		"home":  e.browser().do(http.MethodGet, "/", nil).Body.String(),
+		"join":  e.browser().do(http.MethodGet, "/m/sala-marca", nil).Body.String(),
+		"panel": b.do(http.MethodGet, "/admin", nil).Body.String(),
+	} {
+		if !strings.Contains(page, "Transgenia: IA aplicada") || !strings.Contains(page, "transgenia-logo.png?v=") {
+			t.Errorf("%s lacks logo or tagline", name)
+		}
+	}
+	if rr := e.browser().do(http.MethodGet, "/static/transgenia-logo-alt.png", nil); rr.Code != http.StatusOK || rr.Header().Get("Content-Type") != "image/png" {
+		t.Errorf("logo asset: %d %s", rr.Code, rr.Header().Get("Content-Type"))
+	}
+}

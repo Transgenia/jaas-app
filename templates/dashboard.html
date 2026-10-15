@@ -11,7 +11,7 @@
 <body>
 	<div class="page">
 		<div class="top">
-			<div class="brand"><img src="{{asset "logo.svg"}}" alt="Transgenia" /><h1>Reuniones</h1></div>
+			<div class="brand"><img class="logo-full" src="{{asset "transgenia-logo.png"}}" alt="Transgenia" width="162" height="48" /><div><h1>Reuniones</h1><div class="tagline-inline">Transgenia: IA aplicada</div></div></div>
 			<div class="row">
 				{{with .Email}}<span class="muted">{{.}}{{if $.Superadmin}} · administrador{{end}}</span>{{end}}
 				{{if not .IdentityMode}}<a class="btn secondary" href="/admin/password">Cambiar contraseña</a>{{end}}
@@ -121,7 +121,7 @@
 				<strong>RECORDING_UPLOADED</strong> y <strong>PARTICIPANT_JOINED</strong>. El secreto de firma ("Reveal secret") se carga en el servidor; los webhooks sin firma válida se rechazan.</p>
 			<p class="muted" style="margin-top:.5rem">Las minutas son borradores para revisión humana. Solo se envían por correo a los participantes que el anfitrión apruebe desde la minuta; el sistema no crea tareas.</p>
 		</div>
-		<p class="foot">jaas-app {{version}}</p>
+		<p class="foot">Transgenia: IA aplicada · versión {{version}}</p>
 	</div>
 </body>
 </html>

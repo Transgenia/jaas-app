@@ -10,6 +10,7 @@
 	<script src="{{asset "meeting.js"}}" defer></script>
 </head>
 <body class="meeting">
+	<div class="brand-overlay" aria-label="Transgenia: IA aplicada"><img src="{{asset "transgenia-logo-alt.png"}}" alt="Transgenia" width="146" height="32" /><span>IA aplicada</span></div>
 	<div id="meet" data-app-id="{{.AppID}}" data-room="{{.Slug}}" data-jwt="{{.JWT}}" data-name="{{.DisplayName}}"
 		data-moderator="{{.IsModerator}}" data-csrf="{{.CSRF}}" data-capture="{{.Capture}}"></div>
 </body>

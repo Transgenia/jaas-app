@@ -116,10 +116,10 @@ const emailFrame = `{{define "head"}}<!doctype html>
   <div style="font-size:13.5px;line-height:1.65;color:#3D3935;padding-top:16px;">{{.Closing}}</div>
   {{with .SignatureName}}<div style="font-size:14px;font-weight:bold;color:#101820;padding-top:14px;">{{.}}</div>{{end}}
   {{with .SignatureRole}}<div style="font-size:12.5px;color:#3D3935;">{{.}}</div>{{end}}
-  <div style="font-size:11.5px;font-weight:bold;letter-spacing:2px;color:#D1333B;padding-top:12px;">TRANSGENIA · REUNIONES</div>
+  <div style="font-size:11.5px;font-weight:bold;letter-spacing:2px;color:#D1333B;padding-top:12px;text-transform:uppercase;">Transgenia: IA aplicada</div>
   <div style="font-size:12px;line-height:1.6;color:#3D3935;padding-top:4px;"><a href="https://transgenia.org" style="color:#3D3935;text-decoration:none;">transgenia.org</a> · <a href="https://transgenia.org/legal-privacidad.html" style="color:#D1333B;">Aviso de privacidad</a></div>
 </td></tr>
-<tr><td style="background-color:#101820;padding:14px 32px;font-family:Inter,Arial,Helvetica,sans-serif;font-size:12px;color:#FEFEEA;">Energizar la operación, no solo el proyecto.</td></tr>
+<tr><td style="background-color:#101820;padding:14px 32px;font-family:Inter,Arial,Helvetica,sans-serif;font-size:12px;color:#FEFEEA;">Transgenia: IA aplicada. Minuta y análisis generados con inteligencia artificial por Transgenia.</td></tr>
 </table></td></tr></table></body></html>{{end}}`
 
 const minutesEmailTmpl = `{{template "head" .}}

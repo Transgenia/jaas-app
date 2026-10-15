@@ -959,5 +959,6 @@ func minutesMarkdown(m *Minutes, r *MinutesResult, loc *time.Location) string {
 	}
 	list("Riesgos", r.Risks)
 	list("Preguntas abiertas", r.OpenQuestions)
+	b.WriteString("\n---\n\n_Transgenia: IA aplicada. Minuta y análisis generados con inteligencia artificial por Transgenia._\n")
 	return b.String()
 }
