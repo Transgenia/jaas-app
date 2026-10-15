@@ -1,5 +1,5 @@
 [Unit]
-Description=tgn-meetings: daily verified SQLite backup
+Description=tgn-meetings: daily verified SQLite backup (03:30 America/Mexico_City)
 
 [Timer]
 OnCalendar=*-*-* 09:30:00 UTC

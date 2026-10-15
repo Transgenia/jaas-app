@@ -2,21 +2,50 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"time"
 )
 
-// Retention policy (defaults; see TRANSCRIPT_RETENTION_DAYS and
-// MINUTES_RETENTION_DAYS, 0 disables the time-based purge):
+// Retention is a time-based purge window: calendar months when Months > 0,
+// otherwise days; zero keeps data forever.
+type Retention struct {
+	Days   int
+	Months int
+}
+
+// Cutoff returns the creation time before which data is purged.
+func (r Retention) Cutoff(now time.Time) (time.Time, bool) {
+	switch {
+	case r.Months > 0:
+		return now.AddDate(0, -r.Months, 0), true
+	case r.Days > 0:
+		return now.AddDate(0, 0, -r.Days), true
+	}
+	return time.Time{}, false
+}
+
+func (r Retention) String() string {
+	switch {
+	case r.Months > 0:
+		return fmt.Sprintf("%d months", r.Months)
+	case r.Days > 0:
+		return fmt.Sprintf("%d days", r.Days)
+	}
+	return "forever"
+}
+
+// Retention policy (see TRANSCRIPT_RETENTION_MONTHS/_DAYS and
+// MINUTES_RETENTION_MONTHS/_DAYS; Transgenia runs 9 months for both):
 //   - deleting a room deletes its recordings, transcripts, minutes and
 //     participant sessions immediately (DB.DeleteRoom);
 //   - recording links are dropped when they expire (24 h, JaaS default);
 //   - pre-authenticated transcript links are cleared once used or expired;
-//   - transcripts are deleted after TRANSCRIPT_RETENTION_DAYS (90);
-//   - minutes are deleted after MINUTES_RETENTION_DAYS (365);
+//   - transcripts are deleted after the transcript retention (default 90 days);
+//   - minutes are deleted after the minutes retention (default 365 days);
 //   - webhook idempotency keys are kept 30 days;
 //   - expired admin and participant sessions are purged.
-func (db *DB) PurgeExpired(transcriptDays, minutesDays int) (map[string]int64, error) {
+func (db *DB) PurgeExpired(transcripts, minutes Retention) (map[string]int64, error) {
 	now := db.now()
 	out := map[string]int64{}
 	run := func(name, q string, args ...any) error {
@@ -39,19 +68,19 @@ func (db *DB) PurgeExpired(transcriptDays, minutesDays int) (map[string]int64, e
 		{"admin_sessions", "DELETE FROM admin_sessions WHERE expires_at <= ? OR last_seen_at < ?", []any{now.Unix(), now.Add(-adminIdleTimeout).Unix()}},
 		{"participant_sessions", "DELETE FROM participant_sessions WHERE expires_at <= ?", []any{now.Unix()}},
 	}
-	if transcriptDays > 0 {
+	if cutoff, ok := transcripts.Cutoff(now); ok {
 		steps = append(steps, struct {
 			name string
 			q    string
 			args []any
-		}{"transcriptions", "DELETE FROM transcriptions WHERE created_at < ?", []any{now.AddDate(0, 0, -transcriptDays).Unix()}})
+		}{"transcriptions", "DELETE FROM transcriptions WHERE created_at < ?", []any{cutoff.Unix()}})
 	}
-	if minutesDays > 0 {
+	if cutoff, ok := minutes.Cutoff(now); ok {
 		steps = append(steps, struct {
 			name string
 			q    string
 			args []any
-		}{"minutes", "DELETE FROM minutes WHERE created_at < ? AND status IN ('ready','failed')", []any{now.AddDate(0, 0, -minutesDays).Unix()}})
+		}{"minutes", "DELETE FROM minutes WHERE created_at < ? AND status IN ('ready','failed')", []any{cutoff.Unix()}})
 	}
 	for _, s := range steps {
 		if err := run(s.name, s.q, s.args...); err != nil {
@@ -64,7 +93,7 @@ func (db *DB) PurgeExpired(transcriptDays, minutesDays int) (map[string]int64, e
 func (app *App) runRetention(ctx context.Context) {
 	purge := func() {
 		app.DB.DeactivateExpiredRooms(4 * time.Hour)
-		res, err := app.DB.PurgeExpired(app.Config.TranscriptRetentionDays, app.Config.MinutesRetentionDays)
+		res, err := app.DB.PurgeExpired(app.Config.TranscriptRetention, app.Config.MinutesRetention)
 		if err != nil {
 			slog.Error("retention: purge failed", "error", err.Error())
 			return

@@ -45,9 +45,9 @@ type Config struct {
 	DownloadAllowedHosts []string
 	TrustedProxies       []*net.IPNet
 
-	TranscriptRetentionDays int
-	MinutesRetentionDays    int
-	DisplayTimezone         *time.Location
+	TranscriptRetention Retention
+	MinutesRetention    Retention
+	DisplayTimezone     *time.Location
 
 	// Cloudflare Access in front of /admin. When TeamDomain and AUD are set,
 	// every /admin request must carry a valid Cf-Access-Jwt-Assertion.
@@ -156,6 +156,20 @@ func parseCIDRs(list []string) ([]*net.IPNet, error) {
 	return nets, nil
 }
 
+// loadRetention reads <PREFIX>_RETENTION_MONTHS (calendar months, takes
+// precedence) or <PREFIX>_RETENTION_DAYS. 0 in both keeps data forever.
+func loadRetention(prefix string, defaultDays int) (Retention, error) {
+	months, err := envInt(prefix+"_RETENTION_MONTHS", 0)
+	if err != nil {
+		return Retention{}, err
+	}
+	if months > 0 {
+		return Retention{Months: months}, nil
+	}
+	days, err := envInt(prefix+"_RETENTION_DAYS", defaultDays)
+	return Retention{Days: days}, err
+}
+
 func LoadConfig() (*Config, error) {
 	cfg := &Config{
 		ListenAddr:               envDefault("LISTEN_ADDR", ":8370"),
@@ -232,10 +246,10 @@ func LoadConfig() (*Config, error) {
 		return nil, err
 	}
 
-	if cfg.TranscriptRetentionDays, err = envInt("TRANSCRIPT_RETENTION_DAYS", 90); err != nil {
+	if cfg.TranscriptRetention, err = loadRetention("TRANSCRIPT", 90); err != nil {
 		return nil, err
 	}
-	if cfg.MinutesRetentionDays, err = envInt("MINUTES_RETENTION_DAYS", 365); err != nil {
+	if cfg.MinutesRetention, err = loadRetention("MINUTES", 365); err != nil {
 		return nil, err
 	}
 	if cfg.DisplayTimezone, err = time.LoadLocation(envDefault("DISPLAY_TIMEZONE", "America/Mexico_City")); err != nil {

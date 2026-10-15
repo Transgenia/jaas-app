@@ -278,17 +278,17 @@ func TestRetentionPurge(t *testing.T) {
 	drain(e)
 
 	e.advance(25 * time.Hour)
-	res, err := e.app.DB.PurgeExpired(90, 365)
+	res, err := e.app.DB.PurgeExpired(Retention{Days: 90}, Retention{Days: 365})
 	if err != nil || res["recordings"] != 1 {
 		t.Fatalf("recordings purge: %v %v", err, res)
 	}
 	e.advance(91 * 24 * time.Hour)
-	res, _ = e.app.DB.PurgeExpired(90, 365)
+	res, _ = e.app.DB.PurgeExpired(Retention{Days: 90}, Retention{Days: 365})
 	if res["transcriptions"] != 1 || res["minutes"] != 0 || res["webhook_events"] != 2 {
 		t.Fatalf("90-day purge: %v", res)
 	}
 	e.advance(300 * 24 * time.Hour)
-	res, _ = e.app.DB.PurgeExpired(90, 365)
+	res, _ = e.app.DB.PurgeExpired(Retention{Days: 90}, Retention{Days: 365})
 	if res["minutes"] != 1 {
 		t.Fatalf("365-day purge: %v", res)
 	}
@@ -320,5 +320,44 @@ func TestNoSecretsInLogs(t *testing.T) {
 		if strings.Contains(logs, secret) {
 			t.Errorf("log contains %q", secret)
 		}
+	}
+}
+
+func TestRetentionNineCalendarMonths(t *testing.T) {
+	e := newTestEnv(t)
+	e.app.DB.CreateRoom("sala-prueba", "x", "")
+	nine := Retention{Months: 9}
+	e.signedWebhook(eventJSON("TRANSCRIPTION_UPLOADED", "k1", "s1", "sala-prueba", testLink))
+	drain(e)
+	created := e.now
+
+	// One day before nine calendar months: nothing goes.
+	e.now = created.AddDate(0, 9, -1)
+	res, err := e.app.DB.PurgeExpired(nine, nine)
+	if err != nil || res["transcriptions"] != 0 || res["minutes"] != 0 {
+		t.Fatalf("purged too early: %v %v", err, res)
+	}
+	// One day after nine calendar months: transcript and minutes go.
+	e.now = created.AddDate(0, 9, 1)
+	res, _ = e.app.DB.PurgeExpired(nine, nine)
+	if res["transcriptions"] != 1 || res["minutes"] != 1 {
+		t.Fatalf("nine-month purge: %v", res)
+	}
+}
+
+func TestLoadRetentionFromEnv(t *testing.T) {
+	t.Setenv("TRANSCRIPT_RETENTION_MONTHS", "9")
+	t.Setenv("TRANSCRIPT_RETENTION_DAYS", "30")
+	if r, err := loadRetention("TRANSCRIPT", 90); err != nil || r != (Retention{Months: 9}) {
+		t.Fatalf("months must win over days: %+v %v", r, err)
+	}
+	t.Setenv("MINUTES_RETENTION_MONTHS", "")
+	t.Setenv("MINUTES_RETENTION_DAYS", "")
+	if r, _ := loadRetention("MINUTES", 365); r != (Retention{Days: 365}) || r.String() != "365 days" {
+		t.Fatalf("default: %+v", r)
+	}
+	t.Setenv("MINUTES_RETENTION_MONTHS", "nueve")
+	if _, err := loadRetention("MINUTES", 365); err == nil {
+		t.Fatal("invalid value accepted")
 	}
 }

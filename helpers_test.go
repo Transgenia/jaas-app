@@ -105,22 +105,22 @@ func newTestEnv(t *testing.T) *testEnv {
 	loc, _ := time.LoadLocation("America/Mexico_City")
 	proxies, _ := parseCIDRs([]string{"127.0.0.0/8"})
 	cfg := &Config{
-		PublicOrigin:            testOrigin,
-		JaaSAppID:               testAppID,
-		JaaSKeyID:               testAppID + "/key1",
-		JaaSKey:                 testKey(t),
-		WebhookSecret:           []byte(testSecret),
-		WebhookTolerance:        5 * time.Minute,
-		OpenAIModel:             "test-model",
-		WorkerMaxAttempts:       3,
-		MaxTranscriptSize:       1 << 20,
-		MaxTranscriptChars:      100000,
-		DownloadAllowedHosts:    []string{"objectstorage.*.oraclecloud.com"},
-		TrustedProxies:          proxies,
-		TranscriptRetentionDays: 90,
-		MinutesRetentionDays:    365,
-		DisplayTimezone:         loc,
-		SecureCookies:           true,
+		PublicOrigin:         testOrigin,
+		JaaSAppID:            testAppID,
+		JaaSKeyID:            testAppID + "/key1",
+		JaaSKey:              testKey(t),
+		WebhookSecret:        []byte(testSecret),
+		WebhookTolerance:     5 * time.Minute,
+		OpenAIModel:          "test-model",
+		WorkerMaxAttempts:    3,
+		MaxTranscriptSize:    1 << 20,
+		MaxTranscriptChars:   100000,
+		DownloadAllowedHosts: []string{"objectstorage.*.oraclecloud.com"},
+		TrustedProxies:       proxies,
+		TranscriptRetention:  Retention{Days: 90},
+		MinutesRetention:     Retention{Days: 365},
+		DisplayTimezone:      loc,
+		SecureCookies:        true,
 	}
 	env.llm = &stubLLM{out: []byte(validMinutesJSON)}
 	env.rt = &fakeTransport{status: http.StatusOK, body: testTranscriptJSON}

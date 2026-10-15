@@ -178,7 +178,8 @@ func cmdServe() error {
 
 	errCh := make(chan error, 1)
 	go func() {
-		slog.Info("jaas-app listening", "version", version, "addr", cfg.ListenAddr, "model", cfg.OpenAIModel)
+		slog.Info("jaas-app listening", "version", version, "addr", cfg.ListenAddr, "model", cfg.OpenAIModel,
+			"retention_transcripts", cfg.TranscriptRetention.String(), "retention_minutes", cfg.MinutesRetention.String())
 		errCh <- srv.ListenAndServe()
 	}()
 

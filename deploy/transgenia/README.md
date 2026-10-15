@@ -99,8 +99,10 @@ to the single admin password:
 
 Deleting a room deletes its recordings, transcripts, minutes and participant
 sessions (webhook idempotency keys are kept 30 days without room/session).
-Recording links expire with JaaS (24 h); transcripts after
-`TRANSCRIPT_RETENTION_DAYS` (90); minutes after `MINUTES_RETENTION_DAYS` (365).
+Recording links expire with JaaS (24 h; the videos stay at 8x8, not here).
+Transcripts and minutes: `TRANSCRIPT_RETENTION_MONTHS` / `MINUTES_RETENTION_MONTHS`
+(calendar months, Transgenia uses 9) or the `*_DAYS` variants (defaults 90 and
+365). The effective values are logged at start-up.
 
 ## Logs
 
