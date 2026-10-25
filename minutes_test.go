@@ -95,10 +95,10 @@ func TestWorkerProducesOneDraftPerSession(t *testing.T) {
 
 func itoa(n int64) string { return strconv.FormatInt(n, 10) }
 
-func TestWorkerRetriesThenFails(t *testing.T) {
+func TestWorkerRetriesKnownHTTPThenFails(t *testing.T) {
 	e := newTestEnv(t)
 	e.app.DB.CreateRoom("sala-prueba", "x", "")
-	e.llm.out = []byte(`{"summary": "sin las demás claves"}`)
+	e.llm.err = &httpStatusError{Op: "openai", Code: http.StatusTooManyRequests}
 	e.signedWebhook(eventJSON("TRANSCRIPTION_UPLOADED", "k1", "s1", "sala-prueba", testLink))
 
 	for attempt := 1; attempt <= e.app.Config.WorkerMaxAttempts; attempt++ {
@@ -110,7 +110,7 @@ func TestWorkerRetriesThenFails(t *testing.T) {
 		if attempt == e.app.Config.WorkerMaxAttempts {
 			want = "failed"
 		}
-		if ms[0].Status != want || !strings.Contains(ms[0].Error, "esquema inválido") {
+		if ms[0].Status != want || !strings.Contains(ms[0].Error, "429") {
 			t.Fatalf("attempt %d: status %s error %q", attempt, ms[0].Status, ms[0].Error)
 		}
 		// Not due yet: backoff is honoured.
@@ -121,6 +121,7 @@ func TestWorkerRetriesThenFails(t *testing.T) {
 	}
 	// Admin retry after fixing the cause: transcript is stored, no new download.
 	e.llm.out = []byte(validMinutesJSON)
+	e.llm.err = nil
 	ms, _ := e.app.DB.ListMinutes("sala-prueba")
 	if ok, _ := e.app.DB.RequeueMinutes(ms[0].ID); !ok {
 		t.Fatal("requeue refused")

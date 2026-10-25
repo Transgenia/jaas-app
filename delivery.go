@@ -182,6 +182,13 @@ func (db *DB) QueueDeliveries(minutesID int64, recipients []Recipient, approvedB
 	defer tx.Rollback()
 	now := db.unix()
 	queued := 0
+	var cancelled sql.NullInt64
+	if err := tx.QueryRow("SELECT cancelled_at FROM minutes WHERE id=?", minutesID).Scan(&cancelled); err != nil {
+		return 0, err
+	}
+	if cancelled.Valid {
+		return 0, errAnalysisCancelled
+	}
 	for _, r := range recipients {
 		res, err := tx.Exec(
 			`INSERT INTO minutes_deliveries (minutes_id, email, display_name, status, next_attempt_at, approved_by, created_at)
@@ -210,7 +217,7 @@ func (db *DB) ClaimNextDelivery(lease time.Duration) (*delivery, error) {
 	var d delivery
 	err := db.conn.QueryRow(
 		`UPDATE minutes_deliveries SET attempts = attempts + 1, next_attempt_at = ?
-		 WHERE id = (SELECT id FROM minutes_deliveries WHERE status = 'queued' AND next_attempt_at <= ? ORDER BY next_attempt_at, id LIMIT 1)
+		 WHERE id = (SELECT d.id FROM minutes_deliveries d JOIN minutes m ON m.id=d.minutes_id WHERE d.status = 'queued' AND d.next_attempt_at <= ? AND m.cancelled_at IS NULL ORDER BY d.next_attempt_at, d.id LIMIT 1)
 		 RETURNING id, minutes_id, email, display_name, attempts, approved_by`,
 		now.Add(lease).Unix(), now.Unix(),
 	).Scan(&d.ID, &d.MinutesID, &d.Email, &d.Name, &d.Attempts, &d.ApprovedBy)
@@ -538,7 +545,13 @@ func (app *App) processDelivery(ctx context.Context) bool {
 	}
 	mail, err := app.composeDelivery(d)
 	if err == nil {
-		err = app.Mailer.Send(ctx, mail)
+		app.effectsMu.Lock()
+		if app.DB.minutesCancelled(d.MinutesID) {
+			err = errAnalysisCancelled
+		} else {
+			err = app.Mailer.Send(ctx, mail)
+		}
+		app.effectsMu.Unlock()
 	}
 	switch {
 	case err == nil:
@@ -567,7 +580,7 @@ func (db *DB) ClaimNextHostNotice(lease time.Duration) (*hostNotice, error) {
 	var n hostNotice
 	err := db.conn.QueryRow(
 		`UPDATE host_notifications SET attempts = attempts + 1, next_attempt_at = ?
-		 WHERE rowid = (SELECT rowid FROM host_notifications WHERE status = 'queued' AND next_attempt_at <= ? ORDER BY next_attempt_at LIMIT 1)
+		 WHERE rowid = (SELECT h.rowid FROM host_notifications h JOIN minutes m ON m.id=h.minutes_id WHERE h.status = 'queued' AND h.next_attempt_at <= ? AND m.cancelled_at IS NULL ORDER BY h.next_attempt_at LIMIT 1)
 		 RETURNING minutes_id, email, attempts`,
 		now.Add(lease).Unix(), now.Unix(),
 	).Scan(&n.MinutesID, &n.Email, &n.Attempts)
@@ -595,6 +608,9 @@ func (db *DB) FinishHostNotice(minutesID int64, email, status, errMsg string, re
 // composeHostNotice deliberately carries no meeting content: only the room,
 // the date, how many participants are proposed and the link to review.
 func (app *App) composeHostNotice(n *hostNotice) (*Mail, error) {
+	if app.DB.minutesCancelled(n.MinutesID) {
+		return nil, errAnalysisCancelled
+	}
 	m, err := app.DB.GetMinutes(n.MinutesID)
 	if err != nil {
 		return nil, permanent("la minuta ya no existe")
@@ -656,7 +672,13 @@ func (app *App) processHostNotification(ctx context.Context) bool {
 	}
 	mail, err := app.composeHostNotice(n)
 	if err == nil {
-		err = app.Mailer.Send(ctx, mail)
+		app.effectsMu.Lock()
+		if app.DB.minutesCancelled(n.MinutesID) {
+			err = errAnalysisCancelled
+		} else {
+			err = app.Mailer.Send(ctx, mail)
+		}
+		app.effectsMu.Unlock()
 	}
 	switch {
 	case err == nil:

@@ -443,6 +443,11 @@ func (app *App) linkExpiry(ev *jaasWebhook) time.Time {
 func (app *App) applyWebhook(ev *jaasWebhook, slug string) error {
 	switch ev.EventType {
 	case "TRANSCRIPTION_UPLOADED":
+		// The single-ASR pilot uses browser audio only. Do not start another
+		// analysis from the JaaS transcription pipeline for the same meeting.
+		if app.Config.TranscribeModel == "gpt-transcribe" {
+			return nil
+		}
 		if ev.SessionID == "" {
 			return &rejectedEvent{"missing sessionId"}
 		}
