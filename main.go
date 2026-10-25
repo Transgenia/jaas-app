@@ -14,6 +14,7 @@ import (
 	"os/signal"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 	_ "time/tzdata"
@@ -36,9 +37,12 @@ type App struct {
 	hostLimiter     *failureLimiter // per client IP + room
 	hostRoomLimiter *failureLimiter // per room, any IP
 
-	wake      chan struct{}
-	clock     func() time.Time
-	templates *template.Template
+	wake          chan struct{}
+	clock         func() time.Time
+	templates     *template.Template
+	effectsMu     sync.Mutex // serialize cancellation acknowledgement with SMTP dispatch
+	minutesMu     sync.Mutex
+	minuteCancels map[int64]context.CancelFunc
 }
 
 // maxMeeting: how long a started room stays open to guests and how long a

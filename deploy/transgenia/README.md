@@ -3,7 +3,8 @@
 Hardened fork of `cbrake/jaas-app` (used with the author's permission) that
 adds signed JaaS webhooks, server-side sessions, CSRF, rate limits, a durable
 minutes queue and an OpenAI Responses API worker. Minutes are **drafts for
-human review**: the service never sends e-mail or creates tasks.
+human review**: participant e-mail requires host approval and the service does
+not create tasks. See [PLAN-1.1.md](PLAN-1.1.md) for the current migration gates.
 
 ## Layout on the server
 
@@ -39,7 +40,9 @@ cd /opt/transgenia-meetings && docker compose up -d && docker compose ps
 
 Never use the upstream `update` command (removed here): updates go through a
 reviewed commit, the test stage and a tagged image. Roll back by setting the
-previous `IMAGE_TAG` and `docker compose up -d`.
+previous `IMAGE_TAG` only after reviewing the database/work queues and the
+rollback contract in PLAN-1.1.md. An older worker does not enforce the new
+approval/cancellation columns; a blind image rollback can start unwanted work.
 
 ## Secrets
 
@@ -54,7 +57,8 @@ then `docker compose up -d --force-recreate`. Nothing secret lives in
 3. Temporary port-80-only server for ACME, `certbot certonly --webroot -w /var/www/acme -d meet.transgenia.org`.
 4. Install `nginx/meet.transgenia.org.conf`, `nginx -t && systemctl reload nginx`.
 5. Switch the record to **Proxied**; SSL mode Full (strict) for the hostname.
-6. Cloudflare Access application on `meet.transgenia.org/admin`, policy: `admin@transgenia.org`.
+6. Cloudflare Access application covering `meet.transgenia.org/admin*` and
+   `meet.transgenia.org/visualizations*`, preserving the approved identity policy.
    Put the team domain and AUD tag in `meetings.env`, set `REQUIRE_CF_ACCESS=true`, recreate.
 7. JaaS console → Webhooks: `https://meet.transgenia.org/webhook/recording`,
    events `TRANSCRIPTION_UPLOADED` and `RECORDING_UPLOADED`; copy the endpoint
@@ -106,22 +110,27 @@ Transcripts and minutes: `TRANSCRIPT_RETENTION_MONTHS` / `MINUTES_RETENTION_MONT
 
 ## Transcription (browser capture)
 
-JaaS transcription and recording are paid add-ons, so the service records
-each participant's own microphone in their browser while the room has
-"Transcribir" on: after joining the meeting, the page asks for microphone
-permission, shows a "● Transcribiendo tu micrófono" badge, records only while
-the participant is unmuted in the meeting (silence otherwise) and uploads
-WebM/Opus chunks every 15 s (`POST /m/{slug}/audio`, participant session +
-CSRF header). Chunks of one page session form a stream on disk
-(`/data/audio`, 0600); streams of a room that overlap form a capture run.
-Two minutes without chunks closes a stream; five quiet minutes close the run.
-Each stream is transcribed with `TRANSCRIBE_MODEL` (whisper-1, segment
-timestamps), lines are merged by wall-clock time with the speaker's name,
-Whisper hallucinations on silence and cross-microphone echoes are dropped,
-and the transcript enters the usual minutes pipeline (session id
-`captura-N`). Audio files are deleted once transcribed, on room deletion,
-and in any case after 24 h. The join page tells participants that their
-microphone is recorded and sent to OpenAI and asks for consent.
+Participants explicitly opt into capture before joining. The pre-join controls
+select language (Spanish default), microphone and whether it is shared. A local
+signal test does not upload audio or call a model. Each browser captures its own
+microphone while unmuted, requesting mono 48 kHz and Opus 96 kbps; effective
+settings depend on hardware/browser. Jitsi device IDs are not copied across
+origins. Pistas rotate every ten minutes and upload original WebM chunks every
+15 seconds with session, origin and CSRF checks.
+
+An explicit final manifest proves received chunk count, size and hashes. Idle
+time alone does not establish completeness. The host approves processing at
+`/admin/captures`; before approval, no STT or summary request is started. The
+single ASR is `gpt-transcribe`, without Whisper fallback or parallel JaaS
+transcription processing. Results have window precision, not word timestamps;
+speaker identity is unverified and individual metrics are withheld.
+
+Source audio is stored privately in `/data/audio`, default 30 days with a
+configurable global cap. It is not deleted immediately after STT. Cancelling
+analysis blocks subsequent work and preserves audio under the retention policy;
+already initiated requests may incur cost. Room deletion remains destructive.
+Audio backup and real microphone validation are release prerequisites. See
+PLAN-1.1.md for limits, migration, ambiguity handling and rollback.
 
 ## Sending transcripts and minutes to participants
 

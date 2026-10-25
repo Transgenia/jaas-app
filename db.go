@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -31,6 +32,10 @@ type Room struct {
 type DB struct {
 	conn *sql.DB
 	now  func() time.Time
+	// The service has one worker. This lock serializes capture state and file
+	// commits in this process; database leases still protect durable retries.
+	captureMu      sync.Mutex
+	captureCancels map[int64]context.CancelFunc
 }
 
 var migrations = []string{
@@ -187,6 +192,48 @@ var migrations = []string{
 		error           TEXT
 	);
 	CREATE INDEX audio_streams_run ON audio_streams(run_id, status);`,
+	// v6: processing is an explicit host decision. Existing CHECK constraints
+	// remain intact; cancellation and approval are independent durable facts.
+	`ALTER TABLE capture_runs ADD COLUMN processing_approved_at INTEGER;
+	ALTER TABLE capture_runs ADD COLUMN cancelled_at INTEGER;
+	ALTER TABLE capture_runs ADD COLUMN language TEXT NOT NULL DEFAULT 'es';
+	ALTER TABLE capture_runs ADD COLUMN shared_microphone INTEGER NOT NULL DEFAULT 0;
+	ALTER TABLE capture_runs ADD COLUMN client_name TEXT NOT NULL DEFAULT '';
+	ALTER TABLE capture_runs ADD COLUMN project_name TEXT NOT NULL DEFAULT '';
+	ALTER TABLE capture_runs ADD COLUMN organizer_email TEXT NOT NULL DEFAULT '';
+	ALTER TABLE audio_streams ADD COLUMN metadata_json TEXT NOT NULL DEFAULT '{}';
+	ALTER TABLE audio_streams ADD COLUMN ended_at_ms INTEGER;
+	ALTER TABLE audio_streams ADD COLUMN finalized_at INTEGER;
+	ALTER TABLE audio_streams ADD COLUMN final_seq INTEGER;
+	ALTER TABLE audio_streams ADD COLUMN final_bytes INTEGER;
+	ALTER TABLE audio_streams ADD COLUMN shared_microphone INTEGER NOT NULL DEFAULT 0;
+	ALTER TABLE audio_streams ADD COLUMN language TEXT NOT NULL DEFAULT 'es';
+	ALTER TABLE audio_streams ADD COLUMN purged_at INTEGER;
+	ALTER TABLE minutes ADD COLUMN cancelled_at INTEGER;
+	CREATE TABLE audio_chunks (
+		stream_id TEXT NOT NULL REFERENCES audio_streams(id) ON DELETE CASCADE,
+		seq INTEGER NOT NULL,
+		sha256 TEXT NOT NULL,
+		offset_bytes INTEGER NOT NULL,
+		size_bytes INTEGER NOT NULL,
+		PRIMARY KEY (stream_id, seq)
+	);
+	CREATE INDEX capture_approval ON capture_runs(cancelled_at, processing_approved_at, status);
+	CREATE TABLE ai_usage (
+		id INTEGER PRIMARY KEY,
+		operation_key TEXT UNIQUE NOT NULL,
+		capture_id INTEGER,
+		minutes_id INTEGER,
+		stage TEXT NOT NULL,
+		attempt INTEGER NOT NULL,
+		model_requested TEXT NOT NULL,
+		model_reported TEXT,
+		request_id TEXT,
+		status TEXT NOT NULL,
+		usage_json TEXT,
+		created_at INTEGER NOT NULL,
+		estimated_cost REAL
+	);`,
 }
 
 func InitDB(path string) (*DB, error) {

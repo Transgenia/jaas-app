@@ -174,6 +174,16 @@ func TestAudioUploadRules(t *testing.T) {
 
 func TestCaptureProducesMinutesWithSpeakers(t *testing.T) {
 	e, ft := captureEnv(t)
+	// This capture has Ana and Beto, not the unrelated Pablo fixture used by
+	// other tests. A proposal spoken about Pablo is not his acceptance.
+	e.llm.out = []byte(`{
+	  "summary":"Se revisó el plan de Odoo y Beto aceptó revisar el inventario.",
+	  "key_points":["Plan de Odoo","Revisión del inventario"],
+	  "sentiment":{"overall":"neutral","explanation":"Se registró un compromiso concreto.","by_speaker":[],"timeline":[],"moments":[],"caveats":"Identidades declaradas; borrador pendiente de revisión."},
+	  "decisions":[],
+	  "action_items":[{"task":"Revisar el inventario","owner":"Beto","due_date":null,"evidence":"Beto: De acuerdo, yo reviso el inventario.","confidence":"high"}],
+	  "risks":[],"open_questions":[],"language":"es"
+	}`)
 	fm := &fakeMailer{}
 	e.app.Mailer = fm
 	e.app.Config.AdminEmails = []string{"admin@transgenia.org"}
@@ -203,14 +213,18 @@ func TestCaptureProducesMinutesWithSpeakers(t *testing.T) {
 		t.Fatal("transcribed while recording")
 	}
 	e.advance(streamIdleClose + runIdleClose + time.Minute)
+	finalizeAllCaptureStreams(t, e, 1)
+	if err := e.app.DB.ApproveCapture(1); err != nil {
+		t.Fatal(err)
+	}
 	drain(e)
 
 	if ft.calls != 2 {
 		t.Fatalf("transcriber calls: %d", ft.calls)
 	}
 	for _, id := range []string{streamA, streamB} {
-		if _, err := os.Stat(e.app.streamPath(id)); !os.IsNotExist(err) {
-			t.Errorf("audio %s not deleted after transcription", id)
+		if _, err := os.Stat(e.app.streamPath(id)); err != nil {
+			t.Errorf("audio %s not retained after transcription: %v", id, err)
 		}
 	}
 	ts, _ := e.app.DB.ListTranscriptions("sala-captura")
@@ -248,8 +262,8 @@ func TestCaptureProducesMinutesWithSpeakers(t *testing.T) {
 	}
 	var leftover int
 	e.app.DB.conn.QueryRow("SELECT COUNT(*) FROM audio_streams WHERE transcript IS NOT NULL").Scan(&leftover)
-	if leftover != 0 {
-		t.Error("per-stream transcripts kept after merge")
+	if leftover != 2 {
+		t.Error("per-stream evidence was not retained after merge")
 	}
 	for _, s := range []string{"Buenos días", "ana@cliente.example", "beto@cliente.example"} {
 		if strings.Contains(e.logs.String(), s) {
@@ -268,6 +282,10 @@ func TestCaptureRetriesAndRoomDeletion(t *testing.T) {
 	ana.upload(e, "sala-captura", streamA, 0, []byte("ANA"), ana.csrf)
 	ft.err = &httpStatusError{Op: "openai audio", Code: 503}
 	e.advance(streamIdleClose + runIdleClose + time.Minute)
+	finalizeAllCaptureStreams(t, e, 1)
+	if err := e.app.DB.ApproveCapture(1); err != nil {
+		t.Fatal(err)
+	}
 	drain(e)
 	var status, errMsg string
 	e.app.DB.conn.QueryRow("SELECT status, COALESCE(error,'') FROM audio_streams").Scan(&status, &errMsg)
@@ -297,7 +315,7 @@ func TestOrphanAudioPurge(t *testing.T) {
 	os.MkdirAll(e.app.audioDir(), 0o700)
 	old := filepath.Join(e.app.audioDir(), "viejo.webm")
 	os.WriteFile(old, []byte("x"), 0o600)
-	os.Chtimes(old, e.now.Add(-25*time.Hour), e.now.Add(-25*time.Hour))
+	os.Chtimes(old, e.now.AddDate(0, 0, -31), e.now.AddDate(0, 0, -31))
 	fresh := filepath.Join(e.app.audioDir(), "nuevo.webm")
 	os.WriteFile(fresh, []byte("x"), 0o600)
 	os.Chtimes(fresh, e.now, e.now)

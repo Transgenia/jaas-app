@@ -66,6 +66,19 @@ func (app *App) templateFuncs() template.FuncMap {
 	return template.FuncMap{
 		"asset":   assetURL,
 		"version": func() string { return version },
+		"audioRetentionDays": func() int {
+			if app.Config.AudioRetentionDays > 0 {
+				return app.Config.AudioRetentionDays
+			}
+			return 30
+		},
+		"sessionStatus": func(s string) string {
+			labels := map[string]string{"pending": "Pendiente de procesar", "queued": "En cola", "processing": "Procesando", "ready": "Lista para revisar", "failed": "Revisión requerida", "cancelled": "Cancelada"}
+			if label, ok := labels[s]; ok {
+				return label
+			}
+			return "Revisión requerida"
+		},
 		"local": func(t time.Time) string {
 			if t.IsZero() {
 				return "—"
@@ -119,6 +132,16 @@ func (app *App) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("GET /admin/password", cf(adminPw(app.handlePasswordPage)))
 	mux.Handle("POST /admin/password", cf(adminPw(app.handlePasswordChange)))
 	mux.Handle("GET /admin", cf(admin(app.handleDashboard)))
+	mux.Handle("GET /admin/captures", cf(admin(app.handleCaptureSearch)))
+	mux.Handle("POST /admin/captures/{id}/approve", cf(admin(app.handleApproveCapture)))
+	mux.Handle("POST /admin/captures/{id}/cancel", cf(admin(app.handleCancelCapture)))
+	mux.Handle("POST /admin/captures/{id}/details", cf(admin(app.handleCaptureDetails)))
+	mux.Handle("GET /admin/captures/{id}/audio", cf(admin(app.handleCaptureAudioList)))
+	mux.Handle("GET /admin/audio/{stream}", cf(admin(app.handlePrivateAudio)))
+	mux.Handle("POST /admin/minutes/{id}/cancel", cf(admin(app.handleCancelMinutes)))
+	mux.Handle("GET /visualizations", cf(admin(app.handleVisualizations)))
+	mux.Handle("GET /visualizations/{$}", cf(admin(app.handleVisualizations)))
+	mux.Handle("GET /visualizations/assets/{asset}", cf(admin(app.handleVisualizationAsset)))
 	mux.Handle("POST /admin/rooms", cf(admin(app.handleCreateRoom)))
 	mux.Handle("POST /admin/rooms/{slug}/delete", cf(admin(app.handleDeleteRoom)))
 	mux.Handle("POST /admin/rooms/{slug}/start", cf(admin(app.handleAdminStart)))
@@ -134,6 +157,7 @@ func (app *App) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /m/{slug}/join", app.handleJoinMeeting)
 	mux.HandleFunc("POST /m/{slug}/end", app.handleEndMeeting)
 	mux.HandleFunc("POST /m/{slug}/audio", app.handleAudioChunk)
+	mux.HandleFunc("POST /m/{slug}/audio/finalize", app.handleFinalizeAudio)
 
 	mux.HandleFunc("POST /webhook/recording", app.handleRecordingWebhook)
 }
@@ -569,6 +593,8 @@ func (app *App) handleDeleteRoom(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	app.DB.captureMu.Lock()
+	defer app.DB.captureMu.Unlock()
 	app.deleteRoomAudio(room.Slug)
 	if err := app.DB.DeleteRoom(room.Slug); err != nil {
 		app.serverError(w, "delete room", err)

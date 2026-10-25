@@ -68,7 +68,7 @@ const validMinutesJSON = `{
 }`
 
 const testTranscriptJSON = `{"conferenceName":"room","messages":[
- {"name":"Ana","content":"Pablo envía la propuesta el viernes","timestamp":1760464800000},
+ {"name":"Ana","content":"Pablo envía la propuesta el viernes; alguien revise inventario","timestamp":1760464800000},
  {"name":"Pablo","content":"De acuerdo, la mando el viernes","timestamp":1760464810000}]}`
 
 type testEnv struct {

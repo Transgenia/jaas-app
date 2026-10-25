@@ -35,15 +35,17 @@ type Config struct {
 	// yet; the password is stored hashed and must be changed on first login.
 	AdminInitialPasswordFile string
 
-	OpenAIKey          string
-	OpenAIModel        string
-	OpenAIBaseURL      string
-	TranscribeModel    string        // browser-capture speech-to-text (OpenAI audio API)
-	MaxMeeting         time.Duration // how long a started room, its participant sessions and JWTs last
-	TranscribePrompt   string
-	WorkerMaxAttempts  int
-	MaxTranscriptSize  int64 // bytes downloaded from JaaS
-	MaxTranscriptChars int   // characters sent to the model
+	OpenAIKey            string
+	OpenAIModel          string
+	OpenAIBaseURL        string
+	TranscribeModel      string        // browser-capture speech-to-text (OpenAI audio API)
+	MaxMeeting           time.Duration // how long a started room, its participant sessions and JWTs last
+	TranscribePrompt     string
+	AudioRetentionDays   int
+	AudioMaxStorageBytes int64
+	WorkerMaxAttempts    int
+	MaxTranscriptSize    int64 // bytes downloaded from JaaS
+	MaxTranscriptChars   int   // characters sent to the model
 
 	DownloadAllowedHosts []string
 	TrustedProxies       []*net.IPNet
@@ -257,8 +259,19 @@ func LoadConfig() (*Config, error) {
 		return nil, fmt.Errorf("MAX_MEETING_HOURS must be between 1 and 48")
 	}
 	cfg.MaxMeeting = time.Duration(hours) * time.Hour
-	cfg.TranscribeModel = envDefault("TRANSCRIBE_MODEL", "whisper-1")
-	cfg.TranscribePrompt = envDefault("TRANSCRIBE_PROMPT", "Reunión de trabajo de Transgenia en español de México. Términos: Transgenia, Odoo, CFDI, ERP.")
+	cfg.TranscribeModel = envDefault("TRANSCRIBE_MODEL", "gpt-transcribe")
+	if cfg.TranscribeModel != "gpt-transcribe" {
+		return nil, fmt.Errorf("TRANSCRIBE_MODEL must be gpt-transcribe for this pilot; no automatic fallback is enabled")
+	}
+	cfg.TranscribePrompt = strings.TrimSpace(os.Getenv("TRANSCRIBE_PROMPT"))
+	if cfg.AudioRetentionDays, err = envInt("AUDIO_RETENTION_DAYS", 30); err != nil || cfg.AudioRetentionDays < 1 || cfg.AudioRetentionDays > 90 {
+		return nil, fmt.Errorf("AUDIO_RETENTION_DAYS must be between 1 and 90")
+	}
+	audioStorageMB, err := envInt("AUDIO_MAX_STORAGE_MB", 10240)
+	if err != nil || audioStorageMB < 100 || audioStorageMB > 1048576 {
+		return nil, fmt.Errorf("AUDIO_MAX_STORAGE_MB must be between 100 and 1048576")
+	}
+	cfg.AudioMaxStorageBytes = int64(audioStorageMB) << 20
 	if cfg.WorkerMaxAttempts, err = envInt("WORKER_MAX_ATTEMPTS", 5); err != nil {
 		return nil, err
 	}

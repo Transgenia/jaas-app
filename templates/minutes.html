@@ -13,6 +13,8 @@
 		<div class="card wide doc">
 			<h1>Minuta · {{.M.RoomSlug}}</h1>
 			<p class="sub">Reunión {{local .M.MeetingAt}} ({{.TZ}}) · sesión {{.M.SessionID}}{{with .M.Model}} · modelo {{.}}{{end}}</p>
+			{{if eq .M.Status "cancelled"}}<p class="notice">Análisis cancelado. No se enviará ni se regenerará. El costo previo y los correos ya enviados permanecen.</p>{{else}}
+			<form method="POST" action="/admin/minutes/{{.M.ID}}/cancel"><input type="hidden" name="csrf_token" value="{{.CSRF}}"><button type="submit" class="danger">Cancelar borrador</button></form>{{end}}
 			{{if eq .M.Status "ready"}}
 			<p class="notice">Borrador generado automáticamente. Revísalo antes de compartirlo o actuar sobre él.</p>
 			<div class="row">
@@ -80,7 +82,7 @@
 				<input type="hidden" name="csrf_token" value="{{.CSRF}}" />
 				<button type="submit">Reintentar</button>
 			</form>
-			{{else}}
+			{{else if ne .M.Status "cancelled"}}
 			<p class="notice">Estado: {{if eq .M.Status "processing"}}procesando{{else}}en cola{{end}} (intento {{.M.Attempts}}).{{with .M.Error}} Último error: {{.}}{{end}}</p>
 			{{end}}
 		</div>
