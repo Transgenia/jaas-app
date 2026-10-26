@@ -683,8 +683,12 @@ func (app *App) handleMeeting(w http.ResponseWriter, r *http.Request) {
 		if p.Moderator && !room.Active {
 			app.DB.SetRoomActive(room.Slug, true)
 		}
+		browserCapture := room.Transcription && app.Transcriber != nil
+		// Browser capture owns ASR when its transcriber is available. Keep the
+		// gpt-transcribe pilot closed to JaaS ASR even if that dependency is absent.
+		jaasTranscription := room.Transcription && app.Transcriber == nil && app.Config.TranscribeModel != transcriptionModel
 		jwt, err := GenerateJWT(app.Config.JaaSKey, app.Config.JaaSAppID, app.Config.JaaSKeyID,
-			room.Slug, p.DisplayName, p.Email, p.Moderator, room.Transcription, app.maxMeeting())
+			room.Slug, p.DisplayName, p.Email, p.Moderator, jaasTranscription, app.maxMeeting())
 		if err != nil {
 			app.serverError(w, "jwt", err)
 			return
@@ -696,7 +700,7 @@ func (app *App) handleMeeting(w http.ResponseWriter, r *http.Request) {
 			"IsModerator": p.Moderator,
 			"DisplayName": p.DisplayName,
 			"CSRF":        p.CSRFToken,
-			"Capture":     room.Transcription && app.Transcriber != nil,
+			"Capture":     browserCapture,
 		})
 		return
 	}
