@@ -133,6 +133,12 @@ func main() {
 		err = cmdSendPreview(os.Args[2:])
 	case "version":
 		fmt.Println(version)
+	case "odoo-sync-status":
+		err = cmdOdooSync("status", os.Args[2:])
+	case "odoo-sync-enqueue":
+		err = cmdOdooSync("enqueue", os.Args[2:])
+	case "odoo-sync-retry":
+		err = cmdOdooSync("retry", os.Args[2:])
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown command: %s\n\n", command)
 		printUsage()
@@ -157,6 +163,9 @@ func printUsage() {
 	fmt.Fprintf(os.Stderr, "  regenerate-minutes ID   Queue minutes ID again (stored transcript, no new notices)\n")
 	fmt.Fprintf(os.Stderr, "  send-preview ID TO      E-mail the participant version of minutes ID to TO only\n")
 	fmt.Fprintf(os.Stderr, "  version            Display version information\n")
+	fmt.Fprintf(os.Stderr, "  odoo-sync-status   Display synchronization queue counts without meeting data\n")
+	fmt.Fprintf(os.Stderr, "  odoo-sync-enqueue ID  Explicitly queue one ready historical minute\n")
+	fmt.Fprintf(os.Stderr, "  odoo-sync-retry ID    Retry one failed synchronization event\n")
 }
 
 func cmdServe() error {
@@ -169,6 +178,10 @@ func cmdServe() error {
 		return fmt.Errorf("database: %w", err)
 	}
 	defer db.Close()
+
+	if err := db.bindOdooSyncIdentity(cfg); err != nil {
+		return err
+	}
 
 	created, err := db.BootstrapAdmin(cfg.AdminInitialPasswordFile)
 	if err != nil {
@@ -206,6 +219,11 @@ func cmdServe() error {
 		close(workerDone)
 	}()
 	go app.runRetention(ctx)
+	odooDone := make(chan struct{})
+	go func() {
+		app.runOdooSync(ctx)
+		close(odooDone)
+	}()
 
 	errCh := make(chan error, 1)
 	go func() {
@@ -218,6 +236,8 @@ func cmdServe() error {
 	select {
 	case err := <-errCh:
 		if !errors.Is(err, http.ErrServerClosed) {
+			stop()
+			<-odooDone
 			return err
 		}
 	case <-ctx.Done():
@@ -228,6 +248,10 @@ func cmdServe() error {
 	srv.Shutdown(shutdownCtx)
 	select {
 	case <-workerDone:
+	case <-shutdownCtx.Done():
+	}
+	select {
+	case <-odooDone:
 	case <-shutdownCtx.Done():
 	}
 	return nil

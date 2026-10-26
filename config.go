@@ -84,6 +84,13 @@ type Config struct {
 
 	// SecureCookies is false only for local development over plain HTTP.
 	SecureCookies bool
+
+	// Odoo synchronization is opt-in; it never calls a model or sends mail.
+	OdooSyncEnabled bool
+	OdooBaseURL     string
+	OdooDatabase    string
+	OdooSourceID    string
+	OdooAPIKey      string
 }
 
 // readSecret returns the value of NAME_FILE (preferred) or NAME. Files keep
@@ -332,5 +339,8 @@ func LoadConfig() (*Config, error) {
 		return nil, fmt.Errorf("REQUIRE_CF_ACCESS=true but CF_ACCESS_TEAM_DOMAIN/CF_ACCESS_AUD are empty")
 	}
 
+	if err := loadOdooSyncConfig(cfg); err != nil {
+		return nil, err
+	}
 	return cfg, nil
 }
