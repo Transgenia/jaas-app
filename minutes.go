@@ -274,6 +274,9 @@ type MinutesResult struct {
 	Risks         []string            `json:"risks"`
 	OpenQuestions []string            `json:"open_questions"`
 	Language      string              `json:"language"`
+	// Internal commercial hypotheses, never included in participant deliveries.
+	// nil means a legacy analysis; an empty slice means analyzed, no signals.
+	CommercialSignals []CommercialSignal `json:"commercial_signals"`
 	// Metrics are measured by the service, never produced by the model.
 	Metrics *ConversationMetrics `json:"metrics,omitempty"`
 }
@@ -283,7 +286,7 @@ type MinutesResult struct {
 const minutesSchema = `{
   "type": "object",
   "additionalProperties": false,
-  "required": ["summary", "key_points", "sentiment", "decisions", "action_items", "risks", "open_questions", "language"],
+  "required": ["summary", "key_points", "sentiment", "decisions", "action_items", "risks", "open_questions", "language", "commercial_signals"],
   "properties": {
     "summary": {"type": "string"},
     "key_points": {"type": "array", "items": {"type": "string"}},
@@ -332,7 +335,20 @@ const minutesSchema = `{
         "confidence": {"type": "string", "enum": ["high", "medium", "low"]}}}},
     "risks": {"type": "array", "items": {"type": "string"}},
     "open_questions": {"type": "array", "items": {"type": "string"}},
-    "language": {"type": "string", "enum": ["es"]}
+    "language": {"type": "string", "enum": ["es"]},
+    "commercial_signals": {"type": "array", "maxItems": 12, "items": {
+      "type": "object", "additionalProperties": false,
+      "required": ["kind", "intent", "service", "evidence", "speaker", "reason", "next_step", "confidence"],
+      "properties": {
+        "kind": {"type": "string", "enum": ["renewal", "upsell", "cross_sell", "new_opportunity", "retention_risk"]},
+        "intent": {"type": "string", "enum": ["exploring", "explicit_need", "quote_requested", "objection"]},
+        "service": {"type": "string", "maxLength": 200},
+        "evidence": {"type": "string", "maxLength": 1000},
+        "speaker": {"type": "string", "maxLength": 200},
+        "reason": {"type": "string", "maxLength": 1000},
+        "next_step": {"type": "string", "maxLength": 1000},
+        "confidence": {"type": "string", "enum": ["high", "medium", "low"]}
+      }}}
   }
 }`
 
@@ -353,7 +369,16 @@ func validateMinutes(raw []byte) (*MinutesResult, error) {
 	if err := json.Unmarshal(raw, &top); err != nil {
 		return nil, errors.New("esquema inválido: la salida no es un objeto JSON")
 	}
-	if err := requireKeys(top, "minuta", "summary", "key_points", "sentiment", "decisions", "action_items", "risks", "open_questions", "language"); err != nil {
+	keys := []string{"summary", "key_points", "sentiment", "decisions", "action_items", "risks", "open_questions", "language"}
+	// Legacy stored/provider fixtures remain readable. New Responses calls use
+	// the strict schema above and always include commercial_signals, even [].
+	if _, ok := top["commercial_signals"]; ok {
+		keys = append(keys, "commercial_signals")
+		if err := validateCommercialJSON(top["commercial_signals"]); err != nil {
+			return nil, err
+		}
+	}
+	if err := requireKeys(top, "minuta", keys...); err != nil {
 		return nil, err
 	}
 	var sentiment map[string]json.RawMessage
@@ -555,6 +580,12 @@ Reglas:
   - evidence: cita breve y literal (máximo 200 caracteres) precedida del nombre de quien habla.
   - confidence: high sólo con respaldo explícito; medium o low no autorizan inferir responsable ni plazo. Mantén owner y due_date en null cuando no estén expresos.
 - risks y open_questions: frases breves; listas vacías si no hay.
+- commercial_signals: hipótesis comerciales INTERNAS para revisión humana, máximo 12 y [] cuando no haya evidencia. Analiza necesidades expresas, no intentes vender en toda conversación. No conviertas saludos, cortesía, sentimiento positivo, tiempo de habla o pruebas de audio en intención de compra. No uses estas hipótesis para añadir hechos al resumen ni a las tareas de la minuta.
+  - kind: renewal para recompra/renovación de un servicio ya mencionado como contratado; upsell para ampliar ese servicio; cross_sell para un servicio complementario expresamente discutido; new_opportunity para una nueva necesidad; retention_risk para objeción o riesgo explícito de continuidad. Si no hay evidencia del servicio actual, no inventes una relación comercial.
+  - intent: exploring para exploración explícita, explicit_need para necesidad expresada, quote_requested sólo cuando se solicita precio/cotización/propuesta comercial, objection para un obstáculo explícito. Una recomendación del vendedor no prueba interés del cliente. No identifiques quién es cliente sin evidencia; esa relación se confirma manualmente en Odoo.
+  - service: nombre/descripción del servicio mencionado o cadena vacía si no se identifica. No inventes productos, precios, presupuesto, probabilidad de cierre ni ingresos futuros.
+  - speaker: etiqueta exacta de la transcripción; no resuelvas identidades de micrófonos compartidos. evidence: cita literal de ese participante, sin prefijo añadido y con contexto suficiente para no invertir negaciones. reason: explica la hipótesis y su incertidumbre. next_step: recomendación de seguimiento, no compromiso ni tarea asignada. confidence: high/medium/low indica respaldo textual cualitativo, nunca una probabilidad comercial.
+  - Los sentimientos describen lo expresado sobre un tema. No infieras personalidad, salud, emociones a partir de la voz, solvencia ni disposición a comprar por simpatía. Si un cliente dice que no quiere comprar, conserva esa negativa.
 - language: siempre "es".
 La minuta es un borrador que una persona revisará antes de usarlo.`
 

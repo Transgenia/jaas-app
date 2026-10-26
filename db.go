@@ -234,6 +234,8 @@ var migrations = []string{
 		created_at INTEGER NOT NULL,
 		estimated_cost REAL
 	);`,
+	// v7: durable Odoo events. There is deliberately no historical backfill.
+	odooSyncMigration,
 }
 
 func InitDB(path string) (*DB, error) {

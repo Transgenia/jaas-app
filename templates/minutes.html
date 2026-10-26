@@ -54,6 +54,22 @@
 			<h2>Preguntas abiertas</h2>
 			{{if .R.OpenQuestions}}<ul>{{range .R.OpenQuestions}}<li>{{.}}</li>{{end}}</ul>{{else}}<p class="muted">Ninguna.</p>{{end}}
 
+			<h2>Señales comerciales para revisión interna</h2>
+			<p class="notice">Hipótesis para decidir el seguimiento. No son oportunidades confirmadas ni probabilidades de venta. La identidad del hablante y su relación con el cliente requieren verificación. Esta sección no se incluye en el correo ni en el Markdown para participantes.</p>
+			{{if .R.CommercialAnalysisAvailable}}
+			{{range .R.CommercialSignals}}
+			<section class="card">
+				<h3>{{.KindLabel}}: {{.IntentLabel}}</h3>
+				{{with .Service}}<p><strong>Servicio mencionado:</strong> {{.}}</p>{{end}}
+				<p><strong>Etiqueta de la transcripción:</strong> {{.Speaker}}</p>
+				<blockquote>{{.Evidence}}</blockquote>
+				<p><strong>Hipótesis:</strong> {{.Reason}}</p>
+				<p><strong>Siguiente paso sugerido:</strong> {{.NextStep}}</p>
+				<p class="muted">Respaldo textual cualitativo: {{.Confidence}}. Pendiente de revisión en Odoo.</p>
+			</section>
+			{{else}}<p class="muted">Se evaluaron señales comerciales y no se encontraron hipótesis con evidencia suficiente.</p>{{end}}
+			{{else}}<p class="muted">Esta minuta es anterior al análisis comercial. No evaluada; no equivale a ausencia de oportunidades.</p>{{end}}
+
 			<h2>Enviar a participantes</h2>
 			{{with .Sent}}<p class="notice">Envío aprobado: {{.}} correo(s) en cola. El estado se actualiza al recargar.</p>{{end}}
 			{{if not .MailEnabled}}<p class="muted">El envío de correo no está configurado en el servidor.</p>

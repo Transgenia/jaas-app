@@ -155,6 +155,11 @@ func validateEvidence(r *MinutesResult, raw string) error {
 			return permanent("cita de postura no verificable")
 		}
 	}
+	for _, s := range r.CommercialSignals {
+		if !known[s.Speaker] || !contains(s.Speaker, s.Evidence) {
+			return permanent("señal comercial sin cita literal verificable; requiere revisión")
+		}
+	}
 	return nil
 }
 
