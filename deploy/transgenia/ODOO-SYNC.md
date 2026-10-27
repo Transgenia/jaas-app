@@ -69,6 +69,61 @@ file does not require that secret while synchronization is disabled.
 The Odoo source must bind the integration account, company and permitted owners.
 There is no implicit lookup or creation of contacts based on conversation text.
 
+### Existing accounts with different profile addresses
+
+If a host's Cloudflare Access address differs from the existing Odoo user's
+profile address, configure `ODOO_OWNER_MAP_FILE` before the first activation.
+The sender translates only the outbound snapshot's `owner_email`. The host's
+Meet identity, room ownership, Cloudflare PIN sign-in and Odoo user/contact
+records remain unchanged. This mapping does not create or rename accounts.
+
+The private JSON format is:
+
+```json
+{
+  "version": 1,
+  "odoo_base_url": "https://odoo.example.test",
+  "odoo_database": "example-db",
+  "odoo_source_id": "meet-example-prod",
+  "owners": [
+    {
+      "meet_email": "host@example.test",
+      "odoo_user_id": 101,
+      "odoo_email": "existing-profile@example.test"
+    }
+  ]
+}
+```
+
+Use the read-only account review to obtain each existing user's ID and profile
+address, and verify the receiver's allowed owners against those same IDs. The
+receiver still resolves the target address under its own account and company
+checks; the ID in this file records the reviewed correspondence and is included
+in its immutable digest. It is not transmitted as a new receiver API field.
+
+The file must be regular, not a symlink, at most 16 KiB, and private (for example
+`root:tgn-meetings` with mode `0440`, mounted read-only). Group write, execute and
+other-user permissions are rejected. Require exactly the documented fields;
+duplicate keys, invalid addresses, duplicate source/target addresses and reused
+user IDs are rejected. Source, database and base URL must match the configured
+destination. Up to 128 owners are supported. Addresses are normalized to lower
+case and surrounding whitespace is removed.
+
+Add `compose.odoo-owner-map.yaml` alongside the base Compose file and
+`compose.odoo-sync.yaml` after installing `secrets/odoo_owner_map` privately.
+Never commit the real mapping, paste its contents in logs or pass addresses as
+command-line arguments. When sync is disabled, the file is not opened.
+
+Migration v8 only adds a digest column to the destination binding. The first
+activation seals the canonical map (or direct-address mode) in SQLite. Changing,
+adding or removing a bound mapping requires a reviewed migration; a restart or
+retry cannot silently alter the owner on an already attempted revision. Existing
+v7 bindings can continue in direct-address mode but cannot acquire a mapping
+automatically. Formatting, address case and row order do not change the digest.
+An owner absent from a configured map fails locally with `owner_mapping_missing`
+and sends no data. Delete events do not consult the correspondence and continue
+to retract records even when the previous owner is no longer mapped.
+
 Migration v7 does not enqueue existing history. New events generated while
 disabled accumulate until activation. Review the intended scope before enabling.
 For explicitly selected historical records use `odoo-sync-enqueue ID`;
