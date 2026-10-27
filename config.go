@@ -91,6 +91,7 @@ type Config struct {
 	OdooDatabase    string
 	OdooSourceID    string
 	OdooAPIKey      string
+	odooOwnerMap    *odooOwnerMap
 }
 
 // readSecret returns the value of NAME_FILE (preferred) or NAME. Files keep

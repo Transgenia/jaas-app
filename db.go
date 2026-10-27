@@ -236,6 +236,8 @@ var migrations = []string{
 	);`,
 	// v7: durable Odoo events. There is deliberately no historical backfill.
 	odooSyncMigration,
+	// v8: seal the owner correspondence without rewriting v7 events/history.
+	`ALTER TABLE odoo_sync_identity ADD COLUMN owner_map_digest TEXT NOT NULL DEFAULT '';`,
 }
 
 func InitDB(path string) (*DB, error) {

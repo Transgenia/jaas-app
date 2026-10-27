@@ -42,6 +42,7 @@ jobs:
           if [ "$(gofmt -s -l . | wc -l)" -gt 0 ]; then
             echo "Go code is not formatted. Please run 'gofmt -s -w .'"
             gofmt -s -l .
+            gofmt -s -d .
             exit 1
           fi
 

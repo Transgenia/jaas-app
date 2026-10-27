@@ -115,6 +115,12 @@ func loadOdooSyncConfig(cfg *Config) error {
 	if err != nil || cfg.OdooAPIKey == "" || strings.ContainsAny(cfg.OdooAPIKey, "\r\n") {
 		return errors.New("ODOO_API_KEY or ODOO_API_KEY_FILE must supply a valid credential")
 	}
+	if path := strings.TrimSpace(os.Getenv("ODOO_OWNER_MAP_FILE")); path != "" {
+		cfg.odooOwnerMap, err = loadOdooOwnerMap(path, cfg)
+		if err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -125,17 +131,35 @@ func (db *DB) bindOdooSyncIdentity(cfg *Config) error {
 	if !cfg.OdooSyncEnabled {
 		return nil
 	}
-	_, err := db.conn.Exec(`INSERT INTO odoo_sync_identity(id,source_id,base_url,database_name)
- VALUES(1,?,?,?) ON CONFLICT(id) DO NOTHING`, cfg.OdooSourceID, cfg.OdooBaseURL, cfg.OdooDatabase)
+	tx, err := db.conn.Begin()
 	if err != nil {
 		return errors.New("cannot bind Odoo synchronization destination")
 	}
-	var source, base, database string
-	if err := db.conn.QueryRow("SELECT source_id,base_url,database_name FROM odoo_sync_identity WHERE id=1").Scan(&source, &base, &database); err != nil {
+	defer tx.Rollback()
+	digest := cfg.odooOwnerMapDigest()
+	_, err = tx.Exec(`INSERT INTO odoo_sync_identity(id,source_id,base_url,database_name,owner_map_digest)
+ VALUES(1,?,?,?,?) ON CONFLICT(id) DO NOTHING`, cfg.OdooSourceID, cfg.OdooBaseURL, cfg.OdooDatabase, digest)
+	if err != nil {
+		return errors.New("cannot bind Odoo synchronization destination")
+	}
+	var source, base, database, boundDigest string
+	if err := tx.QueryRow("SELECT source_id,base_url,database_name,owner_map_digest FROM odoo_sync_identity WHERE id=1").Scan(&source, &base, &database, &boundDigest); err != nil {
 		return errors.New("cannot read Odoo synchronization destination")
 	}
 	if source != cfg.OdooSourceID || base != cfg.OdooBaseURL || database != cfg.OdooDatabase {
 		return errors.New("Odoo synchronization destination changed; operator migration required")
+	}
+	// A v7 binding may already have sent the same revision, even if a manual
+	// retry reset its attempts. It can only retain the original direct mode.
+	if boundDigest == "" && cfg.odooOwnerMap == nil {
+		if _, err := tx.Exec("UPDATE odoo_sync_identity SET owner_map_digest=? WHERE id=1", digest); err != nil {
+			return errors.New("cannot bind Odoo owner correspondence")
+		}
+	} else if boundDigest != digest {
+		return errors.New("Odoo owner correspondence changed; operator migration required")
+	}
+	if err := tx.Commit(); err != nil {
+		return errors.New("cannot bind Odoo synchronization destination")
 	}
 	return nil
 }
@@ -376,6 +400,8 @@ func (app *App) processOdooSync(ctx context.Context, client *odooSyncClient) boo
 	code, retry := "", false
 	if err != nil {
 		code = "snapshot_invalid"
+	} else if err := app.Config.mapOdooSnapshotOwner(p); err != nil {
+		code = "owner_mapping_missing"
 	} else {
 		code, retry = client.send(ctx, p)
 	}
