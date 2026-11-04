@@ -268,7 +268,7 @@ func TestOdooOwnerMapV7UpgradePreservesQueueAndLegacyBinding(t *testing.T) {
 	if err := db.conn.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if revision != 9 || generation != 2 || status != "pending" || attempts != 0 || digest != "direct-v1" || version != 8 {
+	if revision != 9 || generation != 2 || status != "pending" || attempts != 0 || digest != "direct-v1" || version != len(migrations) {
 		t.Fatal("v8 migration changed legacy queue or binding")
 	}
 }

@@ -17,6 +17,7 @@
 	var join = document.getElementById("join-meeting")
 	var toggle = document.getElementById("audio-settings-toggle")
 	var api = null, capture = null, started = false, ending = false, ended = false
+	var participation = null, participationTimer = null
 	var testCleanup = function () {}
 	var signal = { result: "not_run", detected: false }
 	var selectedLabel = "", deviceTimer = null
@@ -185,6 +186,7 @@
 		testCleanup()
 		showEnded(capture ? "Guardando los últimos fragmentos de audio. Mantén esta pestaña abierta..." : "La reunión terminó.")
 		Promise.resolve(capture ? capture.stop() : true).then(function (saved) {
+			endParticipation()
 			sendEnd()
 			showEnded(!capture ? "La reunión terminó." : saved ? "La reunión terminó. Audio recibido para revisión; el procesamiento requiere aprobación." : "La reunión terminó. No se pudo confirmar toda la subida de audio; revisa la captura en administración.")
 		})
@@ -219,7 +221,7 @@
 		api.addEventListener("readyToClose", finishMeeting)
 		api.addEventListener("videoConferenceJoined", function () {
 			alignJitsi(options.deviceLabel)
-			if (options.enabled && !capture && !ending) capture = startCapture(options)
+			if (!ending) registerParticipation(options)
 		})
 	})
 	if (mediaDevices && mediaDevices.addEventListener) {
@@ -231,10 +233,56 @@
 		})
 	}
 	window.addEventListener("pagehide", function () {
+		ending = true
 		testCleanup()
 		if (capture) capture.stop()
+		endParticipation()
 		sendEnd()
 	})
+
+	function reportCapture(event) {
+		if (!participation) return Promise.resolve()
+		return participation.report(event).catch(function () {
+			deviceStatus.textContent = "No se pudo actualizar el estado de captura en administración. La cobertura puede estar incompleta."
+		})
+	}
+	function endParticipation() {
+		clearInterval(participationTimer)
+		return reportCapture("ended")
+	}
+	function showCaptureNotice(text) {
+		var notice = document.createElement("div")
+		notice.className = "capture-badge off"
+		notice.setAttribute("role", "status")
+		notice.textContent = text
+		document.body.appendChild(notice)
+	}
+	function registerParticipation(options) {
+		if (d.capture !== "true" || participation) return
+		var connection = crypto.randomUUID()
+		var choice = !captureSupported ? "unsupported" : options.enabled ? "enabled" : "disabled"
+		participation = policy.createParticipationReporter(choice, function (report) {
+			var controller = new AbortController()
+			var timeout = setTimeout(function () { controller.abort() }, 10000)
+			return fetch("/m/" + encodeURIComponent(d.room) + "/capture-status", {
+				method: "POST", credentials: "same-origin", keepalive: true, signal: controller.signal,
+				headers: { "X-CSRF-Token": d.csrf, "Content-Type": "application/json" }, body: JSON.stringify(report),
+			}).then(function (response) {
+				if (!response.ok) throw new Error("capture status unavailable")
+				return response.json()
+			}).finally(function () { clearTimeout(timeout) })
+		}, connection)
+		participation.start().then(function (run) {
+			if (ending || ended) return
+			participationTimer = setInterval(function () { reportCapture("heartbeat") }, 60000)
+			if (options.enabled) { options.runID = run; options.connectionID = connection; capture = startCapture(options) }
+			else showCaptureNotice(choice === "disabled"
+				? "Entraste con la captura desactivada. Tu micrófono no se incluirá en la transcripción desde esta conexión."
+				: "Este navegador no admite la captura. Tu micrófono no se incluirá desde esta conexión.")
+		}).catch(function () {
+			showCaptureNotice("No se pudo registrar tu elección de captura. La reunión puede continuar, pero no se iniciará la captura de audio. Recarga para intentarlo de nuevo.")
+		})
+	}
 
 	function startCapture(initialOptions) {
 		var options = policy.normalize(initialOptions)
@@ -279,6 +327,7 @@
 			}).catch(function (err) {
 				if (attempt < 3 && !(err && /upload/.test(err.message))) return wait(2000 * (attempt + 1)).then(function () { return upload(url, blob, attempt + 1, finalizing) })
 				failed = true
+				reportCapture("upload_failed")
 				closeStream(true)
 					say(finalizing ? "No se confirmó el cierre de la captura. Revisión requerida en administración." : "La subida de audio se interrumpió. Revisa la captura en administración.", "off")
 			})
@@ -286,10 +335,10 @@
 		function recordStream() {
 			if (stopped || failed || muted || current || !media) return
 			var track = media.getAudioTracks()[0]
-			if (!track) { failed = true; closeStream(true); say("No hay una pista de micrófono disponible.", "off"); return }
+			if (!track) { reportCapture("device_error"); failed = true; closeStream(true); say("No hay una pista de micrófono disponible.", "off"); return }
 			var rec
 			try { rec = new MediaRecorder(media, policy.recorderOptions(mime)) }
-			catch (err) { failed = true; closeStream(true); say("No se pudo iniciar la captura de este micrófono.", "off"); return }
+			catch (err) { reportCapture("device_error"); failed = true; closeStream(true); say("No se pudo iniciar la captura de este micrófono.", "off"); return }
 			var streamId = newStreamId(), start = Date.now()
 			var info = policy.metadata(track.getSettings ? track.getSettings() : {}, rec, track.label, signal)
 			var item = { rec: rec, rotate: null, resolve: null, done: null }
@@ -301,7 +350,7 @@
 				isFailed: function () { return failed },
 				upload: function (seq, blob, end) {
 					var params = new URLSearchParams({ stream: streamId, start: String(start), end: String(end), seq: String(seq),
-						language: streamLanguage, shared: streamShared ? "1" : "0", metadata: JSON.stringify(info) })
+						run: String(initialOptions.runID), connection: initialOptions.connectionID, language: streamLanguage, shared: streamShared ? "1" : "0", metadata: JSON.stringify(info) })
 					return upload("/m/" + encodeURIComponent(d.room) + "/audio?" + params.toString(), blob, 0, false)
 				},
 				finalize: function (manifest) {
@@ -316,16 +365,16 @@
 				uploads.finish(Date.now()) // Queued after the final dataavailable upload.
 				settleRecorder()
 			}
-			rec.onerror = function () { failed = true; closeStream(true); say("La captura de audio se interrumpió.", "off"); settleRecorder() }
+			rec.onerror = function () { reportCapture("device_error"); failed = true; closeStream(true); say("La captura de audio se interrumpió.", "off"); settleRecorder() }
 			rec.ondataavailable = function (ev) {
 				if (failed || !ev.data || !ev.data.size) return
 				// The event timestamp and metadata are frozen before any network retry.
 				try { uploads.push(ev.data, Date.now()) } // Preserve the browser's bytes.
-				catch (err) { failed = true; closeStream(true); say("La captura no pudo cerrarse de forma completa. Revisión requerida.", "off") }
+				catch (err) { reportCapture("device_error"); failed = true; closeStream(true); say("La captura no pudo cerrarse de forma completa. Revisión requerida.", "off") }
 			}
 			current = item
 			try { rec.start(policy.CHUNK_MS) }
-			catch (err) { failed = true; settleRecorder(); closeStream(true); say("No se pudo iniciar la captura.", "off"); return }
+			catch (err) { reportCapture("device_error"); failed = true; settleRecorder(); closeStream(true); say("No se pudo iniciar la captura.", "off"); return }
 			item.rotate = setTimeout(function () { closeStream(false).then(openStream) }, policy.ROTATE_MS)
 			say("Capturando audio; procesamiento requiere aprobación")
 		}
@@ -345,6 +394,7 @@
 					track.addEventListener("ended", function () {
 						if (media !== stream || stopped || muted) return
 						closeStream(true)
+						reportCapture("device_error")
 						deviceStatus.textContent = "El micrófono dejó de estar disponible. Selecciona otro para continuar la captura."
 						listDevices().then(function () {
 							if (!stopped && !muted) capture.changeDevice(device.value, selectedLabel)
@@ -352,8 +402,9 @@
 					})
 				}
 				recordStream()
-			}).catch(function () {
+			}).catch(function (err) {
 				if (version !== generation || stopped) return
+				reportCapture(err && err.name === "NotAllowedError" ? "permission_denied" : "device_error")
 				acquiring = false
 				say("Captura detenida: revisa permisos y selecciona un micrófono disponible.", "off")
 			})

@@ -85,7 +85,27 @@
 			},
 		}
 	}
+	// Serial reports bind browser observations to one capture run. A failed
+	// report does not break the queue; it never changes the capture choice.
+	function createParticipationReporter(choice, transport, connection) {
+		var run = 0, queue = Promise.resolve(), ended = false
+		function send(event) {
+			if (ended) return Promise.resolve(run)
+			if (event === "ended") ended = true
+			var next = queue.then(function () {
+				return transport({ run_id: run, choice: choice, event: event, connection_id: connection })
+			}).then(function (response) {
+				if (!response || !Number.isSafeInteger(response.run_id) || response.run_id <= 0 || (run && response.run_id !== run)) throw new Error("invalid capture run")
+				run = response.run_id
+				return run
+			})
+			queue = next.catch(function () {})
+			return next
+		}
+		return { start: function () { return send("joined") }, report: send }
+	}
+
 	return { BITRATE: BITRATE, CHUNK_MS: CHUNK_MS, ROTATE_MS: ROTATE_MS, normalize: normalize, constraints: constraints,
 		chooseMime: chooseMime, recorderOptions: recorderOptions, signalStats: signalStats, signalTest: signalTest,
-		metadata: metadata, matchingDevice: matchingDevice, createStreamUploadSession: createStreamUploadSession }
+		createParticipationReporter: createParticipationReporter, metadata: metadata, matchingDevice: matchingDevice, createStreamUploadSession: createStreamUploadSession }
 })

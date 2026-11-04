@@ -44,7 +44,7 @@ func (db *DB) EnqueueMinutes(slug, sessionID, sourceURL string, sourceExpires, m
 		`INSERT INTO minutes (room_slug, session_id, status, attempts, next_attempt_at, source_url, source_expires_at, meeting_at, created_at, updated_at)
 		 VALUES (?, ?, 'queued', 0, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT (room_slug, session_id) DO UPDATE SET
-		   status = 'queued', attempts = 0, next_attempt_at = excluded.next_attempt_at,
+		   status = 'queued', next_attempt_at = excluded.next_attempt_at,
 		   source_url = excluded.source_url, source_expires_at = excluded.source_expires_at,
 		   error = NULL, updated_at = excluded.updated_at
 		 WHERE minutes.cancelled_at IS NULL AND minutes.status = 'failed' AND NOT EXISTS (
@@ -101,17 +101,25 @@ func (db *DB) ClaimNextMinutes(lease time.Duration) (*minutesJob, error) {
 // "minutes ready" notice for notify (the room owner), so a crash cannot lose
 // it and a re-run never queues it twice.
 func (db *DB) CompleteMinutes(id int64, resultJSON, model string, notify []string) error {
+	return db.completeMinutes(id, resultJSON, model, notify, "")
+}
+
+func (db *DB) completeMinutes(id int64, resultJSON, model string, notify []string, expectedDraft string) error {
 	tx, err := db.conn.Begin()
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
 	now := db.unix()
-	res, err := tx.Exec(
+	query :=
 		`UPDATE minutes SET status = 'ready', result_json = ?, model = ?, error = NULL, source_url = NULL,
-		 locked_until = NULL, updated_at = ? WHERE id = ? AND cancelled_at IS NULL`,
-		resultJSON, model, now, id,
-	)
+		 locked_until = NULL, updated_at = ? WHERE id = ? AND cancelled_at IS NULL`
+	args := []any{resultJSON, model, now, id}
+	if expectedDraft != "" {
+		query += " AND status='failed' AND result_json=?"
+		args = append(args, expectedDraft)
+	}
+	res, err := tx.Exec(query, args...)
 	if err != nil {
 		return err
 	}
@@ -156,8 +164,8 @@ func (db *DB) ClearMinutesSource(id int64) error {
 func (db *DB) RequeueMinutes(id int64) (bool, error) {
 	now := db.unix()
 	res, err := db.conn.Exec(
-		`UPDATE minutes SET status = 'queued', attempts = 0, next_attempt_at = ?, error = NULL, updated_at = ?
-		 WHERE id = ? AND cancelled_at IS NULL AND status = 'failed' AND (
+		`UPDATE minutes SET status = 'queued', next_attempt_at = ?, error = NULL, updated_at = ?
+		 WHERE id = ? AND cancelled_at IS NULL AND status = 'failed' AND COALESCE(result_json,'') = '' AND (
 		   EXISTS (SELECT 1 FROM transcriptions t WHERE t.room_slug = minutes.room_slug AND t.session_id = minutes.session_id)
 		   OR (source_url IS NOT NULL AND source_expires_at > ?))`,
 		now, now, id, now,
@@ -279,6 +287,8 @@ type MinutesResult struct {
 	CommercialSignals []CommercialSignal `json:"commercial_signals"`
 	// Metrics are measured by the service, never produced by the model.
 	Metrics *ConversationMetrics `json:"metrics,omitempty"`
+	// Added by the server after explicit review, never accepted from model output.
+	ReviewWarnings []string `json:"review_warnings,omitempty"`
 }
 
 // minutesSchema is sent to the Responses API with strict structured output
@@ -577,7 +587,7 @@ Reglas:
 - action_items: únicamente compromisos pendientes expresamente aceptados. Una propuesta o recomendación no demuestra aceptación. Una tarea que se describe como ya ejecutada o programada va al resumen como avance, nunca como tarea nueva. Explicar una regla no hace a quien habla responsable de implementarla.
   - owner: el nombre tal como aparece en la transcripción, o null si nadie quedó explícitamente a cargo.
   - due_date: YYYY-MM-DD solo si se mencionó una fecha o un plazo que se pueda resolver a partir de la fecha de la reunión; si no, null.
-  - evidence: cita breve y literal (máximo 200 caracteres) precedida del nombre de quien habla.
+  - evidence: formato exacto "Etiqueta de hablante: cita literal" (máximo 200 caracteres). Copia la etiqueta completa y una cita continua de UNA sola intervención, sin corregir puntuación, resumir, añadir puntos suspensivos ni unir intervenciones. No uses el nombre mencionado dentro del texto como etiqueta de hablante. Si no puedes aportar esa cita, omite la tarea; no inventes evidencia.
   - confidence: high sólo con respaldo explícito; medium o low no autorizan inferir responsable ni plazo. Mantén owner y due_date en null cuando no estén expresos.
 - risks y open_questions: frases breves; listas vacías si no hay.
 - commercial_signals: hipótesis comerciales INTERNAS para revisión humana, máximo 12 y [] cuando no haya evidencia. Analiza necesidades expresas, no intentes vender en toda conversación. No conviertas saludos, cortesía, sentimiento positivo, tiempo de habla o pruebas de audio en intención de compra. No uses estas hipótesis para añadir hechos al resumen ni a las tareas de la minuta.
@@ -752,6 +762,10 @@ func (e *permanentError) Error() string { return e.msg }
 func permanent(msg string) error { return &permanentError{msg} }
 
 func isPermanent(err error) bool {
+	var review *evidenceReviewError
+	if errors.As(err, &review) {
+		return true
+	}
 	var p *permanentError
 	if errors.As(err, &p) {
 		return true
@@ -866,6 +880,11 @@ func (app *App) processOne(ctx context.Context) bool {
 	case err == nil:
 		slog.Info("worker: minutes ready", "id", job.ID, "room", job.RoomSlug, "session", job.SessionID,
 			"attempt", job.Attempts, "ms", time.Since(start).Milliseconds())
+	case isEvidenceReview(err):
+		if e := app.DB.SaveMinutesReview(job.ID, string(raw), model, err.Error()); e != nil {
+			app.DB.FailMinutes(job.ID, "no se pudo guardar el borrador para revisión")
+		}
+		slog.Warn("worker: minutes require evidence review", "id", job.ID, "attempt", job.Attempts)
 	case isPermanent(err) || job.Attempts >= app.Config.WorkerMaxAttempts:
 		slog.Warn("worker: minutes failed", "id", job.ID, "room", job.RoomSlug, "attempt", job.Attempts, "error", err.Error())
 		app.DB.FailMinutes(job.ID, err.Error())
@@ -961,6 +980,18 @@ func (app *App) buildMinutes(ctx context.Context, job *minutesJob) ([]byte, stri
 	if err != nil {
 		return nil, "", permanent("esquema inválido en respuesta generada; requiere revisión antes de regenerar")
 	}
+	prepareMinutesResult(result, t.Data, metrics)
+	normalised, err := json.Marshal(result)
+	if err != nil {
+		return nil, "", err
+	}
+	if err := validateEvidence(result, t.Data); err != nil {
+		return normalised, model, err
+	}
+	return normalised, model, nil
+}
+
+func prepareMinutesResult(result *MinutesResult, transcript string, metrics *ConversationMetrics) {
 	result.Metrics = metrics
 	if metrics != nil {
 		// Keep only people who actually spoke: the model must not invent participants.
@@ -976,19 +1007,14 @@ func (app *App) buildMinutes(ctx context.Context, job *minutesJob) ([]byte, stri
 		}
 		result.Sentiment.BySpeaker = kept
 	}
-	if unmeasuredTranscript(t.Data) {
-		result.Sentiment.BySpeaker = nil
-		result.Sentiment.Moments = nil
-		result.Sentiment.Caveats += " Identidad y tiempos por intervención pendientes de validación; no hay métricas individuales."
+	if unmeasuredTranscript(transcript) {
+		result.Sentiment.BySpeaker = []SpeakerSentiment{}
+		result.Sentiment.Moments = []SentimentMoment{}
+		const note = "Identidad y tiempos por intervención pendientes de validación; no hay métricas individuales."
+		if !strings.Contains(result.Sentiment.Caveats, note) {
+			result.Sentiment.Caveats += " " + note
+		}
 	}
-	if err := validateEvidence(result, t.Data); err != nil {
-		return nil, "", err
-	}
-	normalised, err := json.Marshal(result)
-	if err != nil {
-		return nil, "", err
-	}
-	return normalised, model, nil
 }
 
 // --- presentation ---
@@ -999,6 +1025,9 @@ func minutesMarkdown(m *Minutes, r *MinutesResult, loc *time.Location) string {
 	fmt.Fprintf(&b, "- Reunión: %s (%s)\n- Sesión: %s\n- Generada con: %s\n\n",
 		m.MeetingAt.In(loc).Format("2006-01-02 15:04"), loc.String(), m.SessionID, m.Model)
 	b.WriteString("> Borrador generado automáticamente. Revísalo antes de compartirlo o actuar sobre él.\n\n")
+	for _, warning := range r.ReviewWarnings {
+		fmt.Fprintf(&b, "> %s\n\n", warning)
+	}
 	fmt.Fprintf(&b, "## Resumen\n\n%s\n\n", r.Summary)
 	if len(r.KeyPoints) > 0 {
 		b.WriteString("## Puntos clave\n\n")

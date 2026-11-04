@@ -36,6 +36,8 @@ var (
 // CaptureHints are untrusted browser observations. They describe the capture;
 // they do not authorize processing or prove acoustic quality/identity.
 type CaptureHints struct {
+	ConnectionID     string
+	RunID            int64
 	Language         string
 	SharedMicrophone bool
 	EndedAt          time.Time
@@ -195,7 +197,19 @@ func (db *DB) ApproveCapture(id int64) error {
 		return errors.New("capture is not awaiting approval")
 	}
 	now := db.now()
-	var active, expired, incomplete int
+	var active, expired, incomplete, total int
+	if err = tx.QueryRow("SELECT COUNT(*) FROM audio_streams WHERE run_id=?", id).Scan(&total); err != nil {
+		return err
+	}
+	if total == 0 {
+		return errCaptureNoAudio
+	}
+	if err = tx.QueryRow("SELECT COUNT(*) FROM capture_participation WHERE run_id=? AND ended_at IS NULL AND updated_at>=?", id, now.Add(-participationActiveWindow).Unix()).Scan(&active); err != nil {
+		return err
+	}
+	if active > 0 {
+		return ErrCaptureActive
+	}
 	if err = tx.QueryRow("SELECT COUNT(*) FROM audio_streams WHERE run_id=? AND status='recording' AND last_chunk_at>=?", id, now.Add(-streamIdleClose).Unix()).Scan(&active); err != nil {
 		return err
 	}
@@ -364,15 +378,27 @@ func (app *App) AppendChunkWithMetadata(p *ParticipantSession, id string, seq in
 		if seq != 0 {
 			return errChunkGap
 		}
-		runID, err = openRun(tx, p.RoomSlug, now)
+		if h.RunID > 0 {
+			runID = h.RunID
+			var valid int
+			err = tx.QueryRow("SELECT COUNT(*) FROM capture_runs WHERE id=? AND room_slug=? AND status='open' AND cancelled_at IS NULL AND processing_approved_at IS NULL", runID, p.RoomSlug).Scan(&valid)
+			if err == nil && valid != 1 {
+				return errChunkClosed
+			}
+		} else {
+			runID, err = openRun(tx, p.RoomSlug, now)
+		}
 		if err != nil {
+			return err
+		}
+		if err = checkCaptureParticipation(tx, p, runID, h.ConnectionID, h.RunID > 0); err != nil {
 			return err
 		}
 		if d := now.Sub(start); d < 0 || d > time.Minute {
 			start = now
 		}
 		started = start.UnixMilli()
-		_, err = tx.Exec(`INSERT INTO audio_streams(id,room_slug,run_id,email,display_name,started_at,last_chunk_at,next_seq,bytes,status,metadata_json,language,shared_microphone) VALUES(?,?,?,?,?,?,?,0,0,'recording',?,?,?)`, id, p.RoomSlug, runID, p.Email, p.DisplayName, started, now.Unix(), h.MetadataJSON, h.Language, h.SharedMicrophone)
+		_, err = tx.Exec(`INSERT INTO audio_streams(id,room_slug,run_id,email,display_name,started_at,last_chunk_at,next_seq,bytes,status,metadata_json,language,shared_microphone,participant_key) VALUES(?,?,?,?,?,?,?,0,0,'recording',?,?,?,?)`, id, p.RoomSlug, runID, p.Email, p.DisplayName, started, now.Unix(), h.MetadataJSON, h.Language, h.SharedMicrophone, captureParticipantKey(p, h.ConnectionID))
 		if err != nil {
 			return err
 		}
@@ -384,7 +410,7 @@ func (app *App) AppendChunkWithMetadata(p *ParticipantSession, id string, seq in
 	} else if err != nil {
 		return err
 	}
-	if slug != p.RoomSlug || email != p.Email {
+	if slug != p.RoomSlug || email != p.Email || (h.RunID > 0 && h.RunID != runID) {
 		return errChunkForbidden
 	}
 	var approved, cancelled sql.NullInt64

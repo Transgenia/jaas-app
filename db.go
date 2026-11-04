@@ -238,6 +238,18 @@ var migrations = []string{
 	odooSyncMigration,
 	// v8: seal the owner correspondence without rewriting v7 events/history.
 	`ALTER TABLE odoo_sync_identity ADD COLUMN owner_map_digest TEXT NOT NULL DEFAULT '';`,
+	// v9: explicit browser choices; absence of a report remains unknown.
+	`CREATE TABLE capture_participation (
+	 run_id INTEGER NOT NULL REFERENCES capture_runs(id) ON DELETE CASCADE,
+	 participant_key TEXT NOT NULL,
+	 display_name TEXT NOT NULL,
+	 choice TEXT NOT NULL CHECK(choice IN ('enabled','disabled','unsupported')),
+	 issue TEXT NOT NULL DEFAULT '',
+	 updated_at INTEGER NOT NULL,
+	 ended_at INTEGER,
+	 PRIMARY KEY(run_id,participant_key)
+	);
+	ALTER TABLE audio_streams ADD COLUMN participant_key TEXT NOT NULL DEFAULT '';`,
 }
 
 func InitDB(path string) (*DB, error) {

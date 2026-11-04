@@ -338,17 +338,20 @@ func TestHostNoticeWhenMinutesReady(t *testing.T) {
 			t.Errorf("mail to %s before approval", mail.To)
 		}
 	}
-	// A re-run of the minutes (admin retry) never notifies twice.
+	// Stored drafts are not regenerated; completing the same draft never notifies twice.
 	calls := a.llm.calls
 	if _, err := a.app.DB.conn.Exec("UPDATE minutes SET status = 'failed' WHERE id = ?", m.ID); err != nil {
 		t.Fatal(err)
 	}
-	if ok, err := a.app.DB.RequeueMinutes(m.ID); !ok || err != nil {
-		t.Fatalf("requeue: %v %v", ok, err)
+	if ok, err := a.app.DB.RequeueMinutes(m.ID); ok || err != nil {
+		t.Fatalf("stored draft requeued: %v %v", ok, err)
+	}
+	if err := a.app.DB.CompleteMinutes(m.ID, m.ResultJSON, m.Model, a.app.minutesOwners(m.RoomSlug)); err != nil {
+		t.Fatal(err)
 	}
 	drain(a.testEnv)
-	if a.llm.calls != calls+1 {
-		t.Fatalf("minutes not regenerated: %d calls", a.llm.calls-calls)
+	if a.llm.calls != calls {
+		t.Fatal("stored draft regenerated")
 	}
 	a.advance(time.Hour) // let any (wrongly) re-queued notice become due
 	drain(a.testEnv)

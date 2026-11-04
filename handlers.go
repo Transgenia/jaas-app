@@ -151,12 +151,14 @@ func (app *App) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("GET /admin/minutes/{id}", cf(admin(app.handleViewMinutes)))
 	mux.Handle("GET /admin/minutes/{id}/download", cf(admin(app.handleDownloadMinutes)))
 	mux.Handle("POST /admin/minutes/{id}/retry", cf(admin(app.handleRetryMinutes)))
+	mux.Handle("POST /admin/minutes/{id}/resolve", cf(admin(app.handleResolveMinutes)))
 	mux.Handle("POST /admin/minutes/{id}/send", cf(admin(app.handleSendMinutes)))
 
 	mux.HandleFunc("GET /m/{slug}", app.handleMeeting)
 	mux.HandleFunc("POST /m/{slug}/join", app.handleJoinMeeting)
 	mux.HandleFunc("POST /m/{slug}/end", app.handleEndMeeting)
 	mux.HandleFunc("POST /m/{slug}/audio", app.handleAudioChunk)
+	mux.HandleFunc("POST /m/{slug}/capture-status", app.handleCaptureParticipation)
 	mux.HandleFunc("POST /m/{slug}/audio/finalize", app.handleFinalizeAudio)
 
 	mux.HandleFunc("POST /webhook/recording", app.handleRecordingWebhook)
@@ -881,8 +883,19 @@ func (app *App) handleViewMinutes(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	var review *minutesReview
+	var transcriptID int64
+	if t, err := app.DB.GetTranscriptionBySession(m.RoomSlug, m.SessionID); err == nil {
+		transcriptID = t.ID
+		if m.Status == "failed" && m.ResultJSON != "" {
+			review, _ = app.loadMinutesReview(m, t)
+			if review != nil {
+				res = review.Result
+			}
+		}
+	}
 	app.render(w, http.StatusOK, "minutes.html", map[string]any{
-		"M": m, "R": res, "CSRF": adminFrom(r).CSRFToken, "TZ": app.Config.DisplayTimezone.String(),
+		"Coverage": app.minutesCaptureCoverage(m), "Review": review, "TranscriptID": transcriptID, "M": m, "R": res, "CSRF": adminFrom(r).CSRFToken, "TZ": app.Config.DisplayTimezone.String(),
 		"Recipients": recipients, "MailEnabled": app.Mailer != nil, "Sent": r.URL.Query().Get("enviado"),
 	})
 }

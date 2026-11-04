@@ -64,6 +64,14 @@ func (app *App) handleAudioChunk(w http.ResponseWriter, r *http.Request) {
 	}
 	q := r.URL.Query()
 	hints := CaptureHints{Language: q.Get("language"), MetadataJSON: q.Get("metadata")}
+	if q.Get("run") != "" {
+		hints.ConnectionID = q.Get("connection")
+		hints.RunID, err = strconv.ParseInt(q.Get("run"), 10, 64)
+		if err != nil || hints.RunID <= 0 || !streamIDPattern.MatchString(hints.ConnectionID) {
+			http.Error(w, "Bad Request", 400)
+			return
+		}
+	}
 	switch q.Get("shared") {
 	case "", "0":
 	case "1":
