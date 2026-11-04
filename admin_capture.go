@@ -202,7 +202,11 @@ func (app *App) handleApproveCapture(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := app.DB.ApproveCapture(run.ID); err != nil {
-		http.Error(w, "No se puede procesar: termina la captura, espera el cierre de sus pistas y revisa su estado.", 409)
+		message := "No se puede procesar: termina la captura, espera el cierre de sus pistas y revisa su estado."
+		if errors.Is(err, errCaptureNoAudio) {
+			message = "No se recibió audio para transcribir. Revisa la cobertura de audio: la captura puede estar desactivada, el micrófono silenciado o el navegador sin permiso. No se inició consumo de IA."
+		}
+		http.Error(w, message, 409)
 		return
 	}
 	app.wakeWorker()
@@ -311,7 +315,12 @@ func (app *App) handleCaptureAudioList(w http.ResponseWriter, r *http.Request) {
 		app.serverError(w, "audio rows", err)
 		return
 	}
-	app.render(w, 200, "capture_audio.html", map[string]any{"Run": run, "Files": files})
+	coverage, err := app.DB.captureCoverage(run.ID)
+	if err != nil {
+		app.serverError(w, "capture coverage", err)
+		return
+	}
+	app.render(w, 200, "capture_audio.html", map[string]any{"Run": run, "Files": files, "Coverage": coverage})
 }
 func (app *App) handlePrivateAudio(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("stream")

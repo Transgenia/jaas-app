@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"unicode"
 )
@@ -108,9 +109,34 @@ func normalEvidence(s string) string {
 // Evidence is a literal containment check, not a claim that an LLM's
 // interpretation is true. Acceptance and completion still need host review.
 func validateEvidence(r *MinutesResult, raw string) error {
+	issues, err := evidenceIssues(r, raw)
+	if err != nil {
+		return err
+	}
+	if len(issues) > 0 {
+		return &evidenceReviewError{Issues: issues}
+	}
+	return nil
+}
+
+type evidenceIssue struct {
+	Section  string
+	Index    int
+	Label    string
+	Reason   string
+	Evidence string
+}
+
+type evidenceReviewError struct{ Issues []evidenceIssue }
+
+func (e *evidenceReviewError) Error() string {
+	return "el borrador contiene elementos sin evidencia verificable; revisa el borrador guardado"
+}
+
+func evidenceIssues(r *MinutesResult, raw string) ([]evidenceIssue, error) {
 	us := parseUtterances(raw)
 	if len(us) == 0 {
-		return permanent("sin evidencia textual verificable")
+		return nil, permanent("sin evidencia textual verificable")
 	}
 	known := make(map[string]bool)
 	for _, u := range us {
@@ -134,33 +160,46 @@ func validateEvidence(r *MinutesResult, raw string) error {
 		}
 		return false
 	}
-	for _, a := range r.ActionItems {
-		speaker, quote, ok := strings.Cut(a.Evidence, ":")
-		if !ok || !known[strings.TrimSpace(speaker)] || !contains(strings.TrimSpace(speaker), quote) {
-			return permanent("una tarea contiene evidencia no verificable; requiere revisión")
+	var issues []evidenceIssue
+	add := func(section string, index int, label, reason, quote string) {
+		issues = append(issues, evidenceIssue{section, index, fmt.Sprintf("%s %d", label, index+1), reason, quote})
+	}
+	for i, a := range r.ActionItems {
+		// Match a full channel label, including labels containing colons.
+		// Never guess an identity or drop negations/punctuation to force a match.
+		matched := false
+		for speaker := range known {
+			if quote, ok := strings.CutPrefix(normalEvidence(a.Evidence), speaker+":"); ok && contains(speaker, quote) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			add("action_items", i, "Tarea", "La cita y su etiqueta de hablante no coinciden literalmente con una intervención de la transcripción.", a.Evidence)
+			continue
 		}
 		if a.Owner != nil && !known[*a.Owner] {
-			return permanent("responsable no confirmado en la transcripción")
+			add("action_items", i, "Tarea", "El responsable no coincide con una etiqueta de hablante de la transcripción.", a.Evidence)
 		}
 	}
 	seen := map[string]bool{}
-	for _, s := range r.Sentiment.BySpeaker {
+	for i, s := range r.Sentiment.BySpeaker {
 		if seen[s.Speaker] || !known[s.Speaker] || !contains(s.Speaker, s.Evidence) {
-			return permanent("evidencia de postura por participante no verificable")
+			add("by_speaker", i, "Postura", "Hablante duplicado o cita no verificable para ese hablante.", s.Evidence)
 		}
 		seen[s.Speaker] = true
 	}
-	for _, m := range r.Sentiment.Moments {
+	for i, m := range r.Sentiment.Moments {
 		if !known[m.Speaker] || !contains(m.Speaker, m.Quote) {
-			return permanent("cita de postura no verificable")
+			add("moments", i, "Momento", "La cita no se encontró para ese hablante.", m.Quote)
 		}
 	}
-	for _, s := range r.CommercialSignals {
+	for i, s := range r.CommercialSignals {
 		if !known[s.Speaker] || !contains(s.Speaker, s.Evidence) {
-			return permanent("señal comercial sin cita literal verificable; requiere revisión")
+			add("commercial_signals", i, "Señal comercial", "La cita no se encontró para ese hablante.", s.Evidence)
 		}
 	}
-	return nil
+	return issues, nil
 }
 
 // Cheap deterministic gates operate after ASR, before the summary call.

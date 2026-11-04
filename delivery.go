@@ -183,11 +183,15 @@ func (db *DB) QueueDeliveries(minutesID int64, recipients []Recipient, approvedB
 	now := db.unix()
 	queued := 0
 	var cancelled sql.NullInt64
-	if err := tx.QueryRow("SELECT cancelled_at FROM minutes WHERE id=?", minutesID).Scan(&cancelled); err != nil {
+	var status string
+	if err := tx.QueryRow("SELECT cancelled_at,status FROM minutes WHERE id=?", minutesID).Scan(&cancelled, &status); err != nil {
 		return 0, err
 	}
 	if cancelled.Valid {
 		return 0, errAnalysisCancelled
+	}
+	if status != "ready" {
+		return 0, permanent("la minuta no está lista")
 	}
 	for _, r := range recipients {
 		res, err := tx.Exec(
@@ -470,6 +474,9 @@ func (app *App) composeDelivery(d *delivery) (*Mail, error) {
 	fmt.Fprintf(&body, "Hola %s:\n\n", name)
 	fmt.Fprintf(&body, "Gracias por participar en la reunión %s del %s (hora del centro de México).\n\n", m.RoomSlug, when)
 	fmt.Fprintf(&body, "Adjuntamos la transcripción completa y la minuta. La minuta se generó con apoyo de inteligencia artificial a partir de la transcripción y %s la revisó antes de este envío. Si encuentras un error, responde a este correo.\n\n", reviewer)
+	for _, warning := range res.ReviewWarnings {
+		fmt.Fprintf(&body, "%s\n\n", warning)
+	}
 	fmt.Fprintf(&body, "RESUMEN\n%s\n\n", res.Summary)
 	fmt.Fprintf(&body, "SENTIMIENTO: %s. %s\n\n", res.Sentiment.Overall, res.Sentiment.Explanation)
 	if len(res.KeyPoints) > 0 {

@@ -15,12 +15,26 @@
 			<p class="sub">Reunión {{local .M.MeetingAt}} ({{.TZ}}) · sesión {{.M.SessionID}}{{with .M.Model}} · modelo {{.}}{{end}}</p>
 			{{if eq .M.Status "cancelled"}}<p class="notice">Análisis cancelado. No se enviará ni se regenerará. El costo previo y los correos ya enviados permanecen.</p>{{else}}
 			<form method="POST" action="/admin/minutes/{{.M.ID}}/cancel"><input type="hidden" name="csrf_token" value="{{.CSRF}}"><button type="submit" class="danger">Cancelar borrador</button></form>{{end}}
-			{{if eq .M.Status "ready"}}
+			{{template "capture_coverage" .Coverage}}
+            {{with .TranscriptID}}<p><a href="/admin/transcriptions/{{.}}">Consultar la transcripción guardada</a></p>{{end}}
+            {{if .Review}}
+            <h2>La transcripción está lista; el borrador requiere revisión</h2>
+            <p class="error">La IA generó elementos que no pudimos verificar en la transcripción. Esto no indica que alguien haya rechazado la captura de audio. El borrador está guardado; todavía no está disponible para enviar ni sincronizar.</p>
+            <ul>{{range .Review.Issues}}<li><strong>{{.Label}}:</strong> {{.Reason}}<blockquote>{{.Evidence}}</blockquote></li>{{end}}</ul>
+            <form method="POST" action="/admin/minutes/{{.M.ID}}/resolve">
+                <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+                <input type="hidden" name="draft_digest" value="{{.Review.Digest}}">
+                <p>Al continuar se quitarán los elementos señalados. Revisa también el resumen. No se volverá a llamar a la IA ni se enviará correo a participantes.</p>
+                <button type="submit">Conservar borrador sin los elementos señalados</button>
+            </form>
+            {{end}}
+            {{if or (eq .M.Status "ready") .Review}}
+            {{range .R.ReviewWarnings}}<p class="notice">{{.}}</p>{{end}}
 			<p class="notice">Borrador generado automáticamente. Revísalo antes de compartirlo o actuar sobre él.</p>
-			<div class="row">
+			{{if eq .M.Status "ready"}}<div class="row">
 				<a class="btn secondary" href="/admin/minutes/{{.M.ID}}/download">Descargar Markdown</a>
 				<a class="btn secondary" href="/admin/minutes/{{.M.ID}}/download?format=json">Descargar JSON</a>
-			</div>
+			</div>{{end}}
 			<h2>Resumen</h2>
 			<p>{{.R.Summary}}</p>
 			{{if .R.KeyPoints}}<h2>Puntos clave</h2>
@@ -70,7 +84,7 @@
 			{{else}}<p class="muted">Se evaluaron señales comerciales y no se encontraron hipótesis con evidencia suficiente.</p>{{end}}
 			{{else}}<p class="muted">Esta minuta es anterior al análisis comercial. No evaluada; no equivale a ausencia de oportunidades.</p>{{end}}
 
-			<h2>Enviar a participantes</h2>
+			{{if eq .M.Status "ready"}}<h2>Enviar a participantes</h2>
 			{{with .Sent}}<p class="notice">Envío aprobado: {{.}} correo(s) en cola. El estado se actualiza al recargar.</p>{{end}}
 			{{if not .MailEnabled}}<p class="muted">El envío de correo no está configurado en el servidor.</p>
 			{{else if not .Recipients}}<p class="muted">No hay participantes con correo registrados para esta reunión.</p>
@@ -92,12 +106,15 @@
 				<p style="margin-top:.75rem"><button type="submit">Enviar transcripción y minuta</button></p>
 			</form>
 			{{end}}
+			{{end}}
 			{{else if eq .M.Status "failed"}}
 			<p class="error">No se pudo generar la minuta (intento {{.M.Attempts}}): {{.M.Error}}</p>
-			<form method="POST" action="/admin/minutes/{{.M.ID}}/retry">
+			{{if .TranscriptID}}<p class="notice">La transcripción está guardada. Este fallo ocurrió al preparar la minuta y no prueba que alguien haya desactivado su captura. Aún no se ha generado el aviso de minuta lista.</p>{{end}}
+            {{if not .M.ResultJSON}}<p>Reintentar genera una nueva respuesta de IA con consumo adicional. Los borradores rechazados por versiones anteriores no se conservaron.</p>
+            <form method="POST" action="/admin/minutes/{{.M.ID}}/retry">
 				<input type="hidden" name="csrf_token" value="{{.CSRF}}" />
 				<button type="submit">Reintentar</button>
-			</form>
+			</form>{{else}}<p>El borrador está conservado, pero no se puede verificar con la transcripción disponible. Requiere revisión técnica; no se regenerará automáticamente.</p>{{end}}
 			{{else if ne .M.Status "cancelled"}}
 			<p class="notice">Estado: {{if eq .M.Status "processing"}}procesando{{else}}en cola{{end}} (intento {{.M.Attempts}}).{{with .M.Error}} Último error: {{.}}{{end}}</p>
 			{{end}}

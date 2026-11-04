@@ -109,12 +109,13 @@ test("failed uploads and empty recorders cannot finalize", async () => {
 
 // Exercise the actual meeting lifecycle without microphones, network or Jitsi.
 // In particular, mute clears current before MediaRecorder's final async events.
-async function runMockMeeting({ uploadFailure = false, loseFirstFinalize = false, finalBytes = 7 } = {}) {
+async function runMockMeeting({ uploadFailure = false, loseFirstFinalize = false, finalBytes = 7, captureEnabled = true, permissionDenied = false, registrationFailure = false } = {}) {
 	const fs = require("node:fs")
 	const path = require("node:path")
 	const vm = require("node:vm")
 	const { webcrypto } = require("node:crypto")
-	const elements = new Map(), events = [], timers = new Set(), recorders = []
+	const elements = new Map(), events = [], reports = [], timers = new Set(), recorders = []
+    let microphoneRequests = 0
 	function element(id) {
 		return { id, dataset: {}, value: "", checked: false, disabled: false, hidden: false, textContent: "",
 			handlers: {}, classList: { add() {} }, options: [{ text: "Default" }], selectedIndex: 0,
@@ -127,7 +128,7 @@ async function runMockMeeting({ uploadFailure = false, loseFirstFinalize = false
 		"audio-settings-toggle", "capture-explanation"].forEach(id => elements.set(id, element(id)))
 	elements.get("meet").dataset = { appId: "mock", room: "test-room", jwt: "mock-jwt", name: "Test", moderator: "true", csrf: "mock-csrf", capture: "true" }
 	elements.get("meeting-language").value = "es"
-	elements.get("capture-opt-in").checked = true
+	elements.get("capture-opt-in").checked = captureEnabled
 	let api, finalizeAttempts = 0
 	class MockJitsi {
 		constructor() { this.handlers = {}; api = this }
@@ -152,17 +153,26 @@ async function runMockMeeting({ uploadFailure = false, loseFirstFinalize = false
 	const media = { getTracks: () => [track], getAudioTracks: () => [track] }
 	const context = {
 		document: { getElementById: id => elements.get(id), createElement: element, body: element("body") },
-		navigator: { mediaDevices: { getUserMedia: () => Promise.resolve(media), getSupportedConstraints: () => ({}), addEventListener() {} },
+		navigator: { mediaDevices: { getUserMedia: () => { microphoneRequests++; return permissionDenied ? Promise.reject({ name: "NotAllowedError" }) : Promise.resolve(media) }, getSupportedConstraints: () => ({}), addEventListener() {} },
 			sendBeacon(url) { events.push({ kind: "end", url }); return true } },
 		JitsiMeetExternalAPI: MockJitsi, MediaRecorder: MockRecorder, MeetCaptureOptions: policy,
-		URLSearchParams, crypto: webcrypto, Uint8Array, btoa: value => Buffer.from(value, "binary").toString("base64"),
+		URLSearchParams, AbortController, crypto: webcrypto, Uint8Array, btoa: value => Buffer.from(value, "binary").toString("base64"),
 		addEventListener() {},
 		setTimeout(fn, ms) { const timer = setTimeout(fn, ms <= 12000 ? 0 : ms); timer.unref(); timers.add(timer); return timer },
 		clearTimeout(timer) { clearTimeout(timer); timers.delete(timer) },
+        setInterval(fn, ms) { const timer = setInterval(fn, ms); timer.unref(); timers.add(timer); return timer },
+        clearInterval(timer) { clearInterval(timer); timers.delete(timer) },
 		fetch: async (url, request) => {
 			assert.equal(request.method, "POST")
 			assert.equal(request.headers["X-CSRF-Token"], "mock-csrf")
-			const finalizing = url.includes("/audio/finalize?")
+			if (url.endsWith("/capture-status")) {
+                const report = JSON.parse(request.body)
+                reports.push(report)
+                if (registrationFailure) throw new Error("offline")
+                assert.ok(["enabled", "disabled", "unsupported"].includes(report.choice))
+                return { ok: true, json: async () => ({ run_id: 15 }) }
+            }
+            const finalizing = url.includes("/audio/finalize?")
 			events.push({ kind: finalizing ? "finalize" : "upload", url, body: request.body })
 			if (finalizing && loseFirstFinalize && finalizeAttempts++ === 0) throw new Error("response lost")
 			return { ok: finalizing || !uploadFailure, status: finalizing || !uploadFailure ? 204 : 503 }
@@ -173,13 +183,15 @@ async function runMockMeeting({ uploadFailure = false, loseFirstFinalize = false
 	elements.get("join-meeting").handlers.click()
 	api.handlers.videoConferenceJoined()
 	for (let i = 0; i < 10 && !recorders.length; i++) await new Promise(setImmediate)
-	assert.equal(recorders.length, 1, "capture should have started")
-	api.handlers.audioMuteStatusChanged({ muted: true })
+	assert.equal(recorders.length, captureEnabled && !permissionDenied && !registrationFailure ? 1 : 0, "capture start depends on explicit choice and permission")
+	if (recorders.length) api.handlers.audioMuteStatusChanged({ muted: true })
 	// No final dataavailable/onstop event has happened yet.
 	api.handlers.readyToClose()
 	for (let i = 0; i < 100 && !events.some(event => event.kind === "end"); i++) await new Promise(resolve => setTimeout(resolve, 5))
 	for (const timer of timers) clearTimeout(timer)
 	assert.equal(events.at(-1)?.kind, "end", "meeting end must wait for closure/upload result")
+	events.reports = reports
+    events.microphoneRequests = microphoneRequests
 	return events
 }
 
@@ -204,4 +216,62 @@ test("upload exhaustion never submits a finalize manifest", async () => {
 test("stopping a zero-chunk recorder does not finalize an empty stream", async () => {
 	const events = await runMockMeeting({ finalBytes: 0 })
 	assert.deepEqual(events.map(event => event.kind), ["end"])
+})
+
+test("capture reports bind a connection and serialize end after registration", async () => {
+  let release
+  const ready = new Promise(resolve => { release = resolve })
+  const seen = []
+  const reporter = policy.createParticipationReporter("disabled", async report => {
+    seen.push(report)
+    if (report.event === "joined") await ready
+    return { run_id: 15 }
+  }, "connection-fixture")
+  const start = reporter.start()
+  const end = reporter.report("ended")
+  await Promise.resolve()
+  assert.equal(seen.length, 1)
+  release()
+  await Promise.all([start, end])
+  assert.deepEqual(seen.map(r => [r.run_id, r.choice, r.event, r.connection_id]), [
+    [0, "disabled", "joined", "connection-fixture"], [15, "disabled", "ended", "connection-fixture"],
+  ])
+  await reporter.report("heartbeat")
+  assert.equal(seen.length, 2)
+})
+
+test("failed telemetry cannot silently switch capture runs or choices", async () => {
+  const seen = []
+  const reporter = policy.createParticipationReporter("enabled", async report => {
+    seen.push(report)
+    if (report.event === "permission_denied") throw new Error("offline")
+    return { run_id: report.event === "upload_failed" ? 99 : 15 }
+  }, "connection-fixture")
+  await reporter.start()
+  await assert.rejects(reporter.report("permission_denied"), /offline/)
+  await reporter.report("heartbeat")
+  await assert.rejects(reporter.report("upload_failed"), /invalid capture run/)
+  assert.ok(seen.every(r => r.choice === "enabled"))
+  assert.equal(seen[2].run_id, 15)
+})
+
+
+test("joining with capture disabled records that choice and never opens the microphone", async () => {
+  const events = await runMockMeeting({ captureEnabled: false })
+  assert.equal(events.microphoneRequests, 0)
+  assert.equal(events.reports[0].choice, "disabled")
+  assert.ok(events.every(event => event.kind === "end"))
+})
+
+test("a denied microphone permission is recorded separately from declining capture", async () => {
+  const events = await runMockMeeting({ permissionDenied: true })
+  assert.equal(events.microphoneRequests, 1)
+  assert.ok(events.reports.some(report => report.event === "permission_denied" && report.choice === "enabled"))
+  assert.ok(events.every(event => event.kind === "end"))
+})
+
+test("failed choice registration never starts capture", async () => {
+  const events = await runMockMeeting({ registrationFailure: true })
+  assert.equal(events.microphoneRequests, 0)
+  assert.ok(events.every(event => event.kind === "end"))
 })

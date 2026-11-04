@@ -123,6 +123,7 @@ const emailFrame = `{{define "head"}}<!doctype html>
 </table></td></tr></table></body></html>{{end}}`
 
 const minutesEmailTmpl = `{{template "head" .}}
+{{range .R.ReviewWarnings}}<p style="padding:16px;color:#101820;background:#FEFEEA;">{{.}}</p>{{end}}
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr>
 <td valign="middle" style="font-family:Inter,Arial,Helvetica,sans-serif;">
   <div style="font-size:20px;font-weight:bold;line-height:1.3;color:#101820;">{{.Room}}</div>
