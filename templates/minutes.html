@@ -110,7 +110,8 @@
 			{{else if eq .M.Status "failed"}}
 			<p class="error">No se pudo generar la minuta (intento {{.M.Attempts}}): {{.M.Error}}</p>
 			{{if .TranscriptID}}<p class="notice">La transcripción está guardada. Este fallo ocurrió al preparar la minuta y no prueba que alguien haya desactivado su captura. Aún no se ha generado el aviso de minuta lista.</p>{{end}}
-            {{if not .M.ResultJSON}}<p>Reintentar genera una nueva respuesta de IA con consumo adicional. Los borradores rechazados por versiones anteriores no se conservaron.</p>
+            {{if .Gate}}<p class="notice">La transcripción no pasó una verificación local previa a la IA ({{.Gate}}). Reintentar no cambia el resultado mientras la transcripción sea la misma: no se llama a la IA ni se genera consumo.{{if .CaptureID}} Revisa cuánto audio se recibió en <a href="/admin/captures/{{.CaptureID}}/audio">Audio y cobertura</a>.{{end}}</p>
+            {{else if not .M.ResultJSON}}<p>Reintentar genera una nueva respuesta de IA con consumo adicional. Los borradores rechazados por versiones anteriores no se conservaron.</p>
             <form method="POST" action="/admin/minutes/{{.M.ID}}/retry">
 				<input type="hidden" name="csrf_token" value="{{.CSRF}}" />
 				<button type="submit">Reintentar</button>

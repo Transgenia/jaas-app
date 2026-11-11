@@ -10,6 +10,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -1015,6 +1016,23 @@ func prepareMinutesResult(result *MinutesResult, transcript string, metrics *Con
 			result.Sentiment.Caveats += " " + note
 		}
 	}
+	// Whoever reads the minutes must know that part of the audio is missing.
+	if note := excludedAudioNote(transcript); note != "" && !slices.Contains(result.ReviewWarnings, note) {
+		result.ReviewWarnings = append(result.ReviewWarnings, note)
+	}
+}
+
+// excludedAudioNote reports tracks the host left out after their transcription
+// failed, as declared by the consolidated capture transcript.
+func excludedAudioNote(transcript string) string {
+	var doc struct {
+		Streams int   `json:"excluded_streams"`
+		AudioMS int64 `json:"excluded_audio_ms"`
+	}
+	if json.Unmarshal([]byte(transcript), &doc) != nil || doc.Streams < 1 {
+		return ""
+	}
+	return fmt.Sprintf("Esta minuta se generó sin %d pista(s) de audio (%s) cuya transcripción falló; el anfitrión decidió continuar sin ellas. Puede faltar parte de la conversación.", doc.Streams, fmtDuration(float64(doc.AudioMS)/1000))
 }
 
 // --- presentation ---

@@ -58,6 +58,14 @@
 		var matches = (devices || []).filter(function (device) { return normalized(device.label) === wanted })
 		return matches.length === 1 ? matches[0] : null
 	}
+	// Text for the in-meeting badge once a pause is no longer momentary. It names
+	// the cause (the Jitsi microphone) and the consequence (no audio captured).
+	function pauseReminder(elapsedMs, shared) {
+		var minutes = Math.floor(elapsedMs / 60000)
+		if (!(minutes >= 1)) return ""
+		return "Captura en pausa desde hace " + minutes + " min: el micrófono está silenciado en Jitsi. "
+			+ (shared ? "Nadie en esta sala queda capturado hasta que lo actives." : "Actívalo para seguir capturando tu audio.")
+	}
 	// enqueue is the capture-wide serial queue. A recorder closes only after its
 	// final dataavailable event; its immutable manifest is sent behind those bytes.
 	function createStreamUploadSession(transport) {
@@ -107,5 +115,6 @@
 
 	return { BITRATE: BITRATE, CHUNK_MS: CHUNK_MS, ROTATE_MS: ROTATE_MS, normalize: normalize, constraints: constraints,
 		chooseMime: chooseMime, recorderOptions: recorderOptions, signalStats: signalStats, signalTest: signalTest,
-		createParticipationReporter: createParticipationReporter, metadata: metadata, matchingDevice: matchingDevice, createStreamUploadSession: createStreamUploadSession }
+		createParticipationReporter: createParticipationReporter, metadata: metadata, matchingDevice: matchingDevice, createStreamUploadSession: createStreamUploadSession,
+		pauseReminder: pauseReminder }
 })

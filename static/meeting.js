@@ -293,6 +293,7 @@
 		var mime = policy.chooseMime(MediaRecorder.isTypeSupported.bind(MediaRecorder))
 		var stopped = false, failed = false, muted = true, acquiring = false, generation = 0, muteVersion = 0
 		var media = null, current = null, queue = Promise.resolve(), recorders = new Set()
+		var paused = false, pausedAt = 0, pauseTimer = null
 		function wait(ms) { return new Promise(function (resolve) { setTimeout(resolve, ms) }) }
 		function newStreamId() {
 			var id = new Uint8Array(18); crypto.getRandomValues(id)
@@ -409,9 +410,26 @@
 				say("Captura detenida: revisa permisos y selecciona un micrófono disponible.", "off")
 			})
 		}
+		// Capture follows the Jitsi microphone. A pause is reported so the host
+		// can later see how much of the meeting has no audio, instead of a
+		// heartbeat that only says capture was chosen.
+		function notePause(value) {
+			if (value === paused) return
+			paused = value
+			clearInterval(pauseTimer)
+			reportCapture(paused ? "paused" : "resumed")
+			if (paused) { pausedAt = Date.now(); pauseTimer = setInterval(remindPaused, 30000) }
+		}
+		function remindPaused() {
+			if (stopped || failed || !muted) { clearInterval(pauseTimer); return }
+			var text = policy.pauseReminder(Date.now() - pausedAt, options.shared)
+			// A shared microphone is the only source for everyone in the room.
+			if (text) say(text, options.shared ? "off" : "muted")
+		}
 		function setMuted(value) {
 			muted = value
 			if (stopped || failed) return
+			notePause(muted)
 			if (muted) {
 				closeStream(true)
 				say("Micrófono silenciado: la captura está pausada.", "muted")
@@ -429,6 +447,7 @@
 			},
 			stop: function () {
 				stopped = true
+				clearInterval(pauseTimer)
 				if (api.removeEventListener) api.removeEventListener("audioMuteStatusChanged", muteListener)
 				closeStream(true)
 				// Include recorders already closing because of mute, rotation or a

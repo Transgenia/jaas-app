@@ -31,6 +31,10 @@ var (
 	ErrCaptureCancelled   = errors.New("capture cancelled")
 	ErrCaptureNotApproved = errors.New("capture not approved for processing")
 	ErrCaptureIncomplete  = errors.New("capture is missing a verified final manifest")
+	// The capture is not in a failed state or has no failed track left to act on.
+	ErrCaptureNotRecoverable = errors.New("capture has no failed tracks to recover")
+	// Excluding every track would leave nothing to build minutes from.
+	ErrCaptureNoTranscript = errors.New("capture has no transcribed track to continue with")
 )
 
 // CaptureHints are untrusted browser observations. They describe the capture;
@@ -75,6 +79,8 @@ type AIUsage struct {
 	RequestID      string
 	Status         string
 	UsageJSON      json.RawMessage
+	// ErrorKind is a bounded label such as "connection failed" or "http 500".
+	ErrorKind string
 }
 
 // Only provider counters go into UsageJSON. No prompt or transcript belongs
@@ -87,14 +93,18 @@ func (db *DB) RecordAIUsage(u AIUsage) error {
 	if len(u.UsageJSON) > 0 {
 		usage = string(u.UsageJSON)
 	}
-	_, err := db.conn.Exec(`INSERT INTO ai_usage(operation_key,capture_id,minutes_id,stage,attempt,model_requested,model_reported,request_id,status,usage_json,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(operation_key) DO UPDATE SET model_reported=excluded.model_reported,request_id=excluded.request_id,status=excluded.status,usage_json=excluded.usage_json`, u.OperationKey, u.CaptureID, u.MinutesID, u.Stage, u.Attempt, u.ModelRequested, u.ModelReported, u.RequestID, u.Status, usage, db.unix())
+	var kind any
+	if u.ErrorKind != "" {
+		kind = u.ErrorKind
+	}
+	_, err := db.conn.Exec(`INSERT INTO ai_usage(operation_key,capture_id,minutes_id,stage,attempt,model_requested,model_reported,request_id,status,usage_json,error_kind,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(operation_key) DO UPDATE SET model_reported=excluded.model_reported,request_id=excluded.request_id,status=excluded.status,usage_json=excluded.usage_json,error_kind=excluded.error_kind`, u.OperationKey, u.CaptureID, u.MinutesID, u.Stage, u.Attempt, u.ModelRequested, u.ModelReported, u.RequestID, u.Status, usage, kind, db.unix())
 	return err
 }
 
 const captureColumns = `r.id,r.room_slug,r.started_at,r.last_activity_at,r.ended_at,r.status,
 	r.processing_approved_at,r.cancelled_at,r.language,r.shared_microphone,r.client_name,r.project_name,r.organizer_email,COALESCE(r.error,''),
 	(SELECT COUNT(*) FROM audio_streams s WHERE s.run_id=r.id),
-	(SELECT COUNT(*) FROM audio_streams s WHERE s.run_id=r.id AND s.status='failed'),
+	(SELECT COUNT(*) FROM audio_streams s WHERE s.run_id=r.id AND s.status='failed' AND s.excluded_at IS NULL),
 	(SELECT COALESCE(SUM(bytes),0) FROM audio_streams s WHERE s.run_id=r.id)`
 
 func scanCapture(row interface{ Scan(...any) error }) (*captureRun, error) {
@@ -274,6 +284,128 @@ func (db *DB) CancelCapture(id int64) error {
 		cancel()
 	}
 	return nil
+}
+
+// failedStreams validates that an approved capture stopped on failed tracks and
+// returns them. retained limits the answer to tracks whose audio still exists.
+// Called with captureMu held.
+func (db *DB) failedStreams(id int64, retained bool) ([]string, error) {
+	var status string
+	var approved, cancelled sql.NullInt64
+	err := db.conn.QueryRow("SELECT status,processing_approved_at,cancelled_at FROM capture_runs WHERE id=?", id).Scan(&status, &approved, &cancelled)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	if cancelled.Valid {
+		return nil, ErrCaptureCancelled
+	}
+	if !approved.Valid {
+		return nil, ErrCaptureNotApproved
+	}
+	if db.captureCancels[id] != nil {
+		return nil, ErrCaptureActive
+	}
+	if status != "failed" {
+		return nil, ErrCaptureNotRecoverable
+	}
+	q := "SELECT id FROM audio_streams WHERE run_id=? AND status='failed' AND excluded_at IS NULL"
+	if retained {
+		q += " AND purged_at IS NULL AND finalized_at IS NOT NULL"
+	}
+	rows, err := db.conn.Query(q+" ORDER BY started_at,id", id)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var stream string
+		if err = rows.Scan(&stream); err != nil {
+			return nil, err
+		}
+		ids = append(ids, stream)
+	}
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(ids) == 0 {
+		return nil, ErrCaptureNotRecoverable
+	}
+	return ids, nil
+}
+
+// RetryFailedStreams sends the failed tracks of an approved capture back to
+// transcription. It is an explicit host decision: a request whose outcome is
+// unknown may already have been billed, so its marker is cleared only here,
+// never automatically. Attempts keep counting so usage rows are not rewritten.
+func (app *App) RetryFailedStreams(id int64) (int, error) {
+	db := app.DB
+	db.captureMu.Lock()
+	defer db.captureMu.Unlock()
+	ids, err := db.failedStreams(id, true)
+	if err != nil {
+		return 0, err
+	}
+	for _, stream := range ids {
+		if err = os.Remove(app.requestPath(stream)); err != nil && !os.IsNotExist(err) {
+			return 0, err
+		}
+		// A durable result that cannot be read back is neither trusted nor reused.
+		if cached, e := os.ReadFile(app.resultPath(stream)); e == nil {
+			var result cachedCaptureResult
+			if json.Unmarshal(cached, &result) != nil || result.Attempt < 1 {
+				if err = os.Remove(app.resultPath(stream)); err != nil {
+					return 0, err
+				}
+			}
+		}
+	}
+	tx, err := db.conn.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	if _, err = tx.Exec("UPDATE audio_streams SET status='closed',error=NULL,next_attempt_at=0 WHERE run_id=? AND status='failed' AND excluded_at IS NULL AND purged_at IS NULL AND finalized_at IS NOT NULL", id); err != nil {
+		return 0, err
+	}
+	if _, err = tx.Exec("UPDATE capture_runs SET status='transcribing',error=NULL WHERE id=?", id); err != nil {
+		return 0, err
+	}
+	return len(ids), tx.Commit()
+}
+
+// ExcludeFailedStreams records the host's decision to build minutes without
+// the tracks whose transcription failed. Their audio and error stay on record;
+// the consolidated transcript declares the omission instead of hiding it.
+func (db *DB) ExcludeFailedStreams(id int64) (int, error) {
+	db.captureMu.Lock()
+	defer db.captureMu.Unlock()
+	ids, err := db.failedStreams(id, false)
+	if err != nil {
+		return 0, err
+	}
+	var usable int
+	if err = db.conn.QueryRow("SELECT COUNT(*) FROM audio_streams WHERE run_id=? AND status='transcribed' AND excluded_at IS NULL", id).Scan(&usable); err != nil {
+		return 0, err
+	}
+	if usable == 0 {
+		return 0, ErrCaptureNoTranscript
+	}
+	tx, err := db.conn.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	if _, err = tx.Exec("UPDATE audio_streams SET excluded_at=? WHERE run_id=? AND status='failed' AND excluded_at IS NULL", db.unix(), id); err != nil {
+		return 0, err
+	}
+	if _, err = tx.Exec("UPDATE capture_runs SET status='transcribing',error=NULL WHERE id=?", id); err != nil {
+		return 0, err
+	}
+	return len(ids), tx.Commit()
 }
 
 func validCaptureLanguage(language string) bool {
@@ -708,6 +840,26 @@ func (app *App) verifyCommittedAudio(id string, audio []byte) error {
 type cachedCaptureResult struct {
 	Attempt  int                 `json:"attempt"`
 	Segments []transcriptSegment `json:"segments"`
+	// A window without recognisable speech has no segment to carry the request
+	// identity and billed usage, so the durable result keeps them here.
+	RequestID string          `json:"request_id,omitempty"`
+	Usage     json.RawMessage `json:"usage,omitempty"`
+}
+
+// Spanish labels for the admin; the bounded English kind goes to logs and usage.
+var transcriptionCauseLabels = map[string]string{
+	"connection failed":   "sin conexión con el proveedor",
+	"request timed out":   "tiempo de espera agotado",
+	"request canceled":    "solicitud cancelada",
+	"unexpected response": "respuesta no reconocida",
+}
+
+func uncertainTranscription(cause string) error {
+	label, ok := transcriptionCauseLabels[cause]
+	if !ok {
+		label = "causa no clasificada"
+	}
+	return permanent("resultado de solicitud incierto (" + label + "); revisión manual")
 }
 
 func writeCaptureResult(path string, data []byte) error {
@@ -762,6 +914,7 @@ func (app *App) transcribeStream(parent context.Context, id string, attempt int)
 	ctx = withTranscriptionLanguages(ctx, langs)
 	var segs []transcriptSegment
 	providerStarted, uncertain := false, false
+	cause := "" // bounded label of a provider-stage failure; never provider text
 	usageAttempt := attempt
 	model := app.Config.TranscribeModel
 	if model == "" {
@@ -780,6 +933,7 @@ func (app *App) transcribeStream(parent context.Context, id string, attempt int)
 			usageAttempt = result.Attempt
 			u.Attempt = usageAttempt
 			u.OperationKey = fmt.Sprintf("transcription:%s:%d", id, usageAttempt)
+			u.RequestID, u.UsageJSON = result.RequestID, result.Usage
 		}
 	} else if !os.IsNotExist(cacheErr) {
 		err = permanent("resultado durable no disponible; revisión manual")
@@ -793,6 +947,7 @@ func (app *App) transcribeStream(parent context.Context, id string, attempt int)
 				u.OperationKey = fmt.Sprintf("transcription:%s:%d", id, previous.Attempt)
 			}
 			providerStarted, uncertain = true, true
+			cause = "no durable result"
 			err = permanent("solicitud anterior sin resultado durable; revisión manual")
 		} else if !os.IsNotExist(e) {
 			err = permanent("estado de solicitud no disponible; revisión manual")
@@ -841,12 +996,26 @@ func (app *App) transcribeStream(parent context.Context, id string, attempt int)
 		}
 		if err == nil && ctx.Err() != nil {
 			err = ctx.Err()
+			cause, _ = transcriptionFailureCause(err)
 		}
 		if err == nil {
 			providerStarted = true
 			segs, err = app.Transcriber.Transcribe(ctx, audio, "pista.webm")
+			result := cachedCaptureResult{Attempt: attempt, Segments: segs}
+			var failure *audioTranscriptionError
+			if errors.As(err, &failure) && failure.Kind == audioKindEmptyTranscript {
+				// A successful response without text is a definite answer: this
+				// window has no recognisable speech. It is neither an uncertain
+				// request nor a reason to hold back the rest of the meeting.
+				segs, err = []transcriptSegment{}, nil
+				result.Segments, result.RequestID, result.Usage = segs, failure.RequestID, failure.Usage
+				u.RequestID, u.UsageJSON = failure.RequestID, failure.Usage
+			}
+			if err != nil {
+				cause, u.RequestID = transcriptionFailureCause(err)
+			}
 			if err == nil {
-				b, e := json.Marshal(cachedCaptureResult{Attempt: attempt, Segments: segs})
+				b, e := json.Marshal(result)
 				if e == nil {
 					e = writeCaptureResult(app.resultPath(id), b)
 				}
@@ -862,7 +1031,7 @@ func (app *App) transcribeStream(parent context.Context, id string, attempt int)
 					}
 				} else {
 					uncertain = true
-					err = permanent("resultado de solicitud incierto; revisión manual")
+					err = uncertainTranscription(cause)
 				}
 			}
 		}
@@ -880,6 +1049,17 @@ func (app *App) transcribeStream(parent context.Context, id string, attempt int)
 		u.ModelReported = segs[0].Model
 		u.UsageJSON = segs[0].Usage
 	}
+	if err != nil {
+		u.ErrorKind = cause
+		// Only this package's fixed messages are logged, never a provider error.
+		detail := ""
+		var fixed *permanentError
+		if errors.As(err, &fixed) {
+			detail = fixed.msg
+		}
+		slog.Warn("capture: stream transcription failed", "run", runID, "attempt", attempt, "usage_status", u.Status,
+			"cause", cause, "request_id", u.RequestID, "detail", detail, "final", isPermanent(err) || attempt >= app.Config.WorkerMaxAttempts)
+	}
 	if e := db.RecordAIUsage(u); e != nil {
 		slog.Error("capture: usage persistence failed")
 	}
@@ -890,6 +1070,9 @@ func (app *App) transcribeStream(parent context.Context, id string, attempt int)
 		return
 	}
 	if err == nil {
+		if segs == nil {
+			segs = []transcriptSegment{}
+		}
 		b, e := json.Marshal(segs)
 		if e != nil {
 			return
@@ -898,7 +1081,7 @@ func (app *App) transcribeStream(parent context.Context, id string, attempt int)
 			slog.Error("capture: persistence failed; cached result and audio retained")
 			return
 		}
-		slog.Info("capture: stream transcribed", "segments", len(segs))
+		slog.Info("capture: stream transcribed", "run", runID, "segments", len(segs))
 		return
 	}
 	if isPermanent(err) || attempt >= app.Config.WorkerMaxAttempts {
@@ -930,7 +1113,14 @@ func (app *App) finishRun(run *captureRun) {
 		return
 	}
 	var failed int
-	if err = tx.QueryRow("SELECT COUNT(*) FROM audio_streams WHERE run_id=? AND (status!='transcribed' OR finalized_at IS NULL)", run.ID).Scan(&failed); err != nil {
+	if err = tx.QueryRow("SELECT COUNT(*) FROM audio_streams WHERE run_id=? AND excluded_at IS NULL AND (status!='transcribed' OR finalized_at IS NULL)", run.ID).Scan(&failed); err != nil {
+		return
+	}
+	// Tracks the host excluded after a failed transcription stay out of the
+	// transcript, and the document says so instead of claiming completeness.
+	var excluded int
+	var excludedMS int64
+	if err = tx.QueryRow("SELECT COUNT(*),COALESCE(SUM(MAX(COALESCE(ended_at_ms,last_chunk_at*1000)-started_at,0)),0) FROM audio_streams WHERE run_id=? AND excluded_at IS NOT NULL", run.ID).Scan(&excluded, &excludedMS); err != nil {
 		return
 	}
 	if failed > 0 {
@@ -938,7 +1128,7 @@ func (app *App) finishRun(run *captureRun) {
 		tx.Commit()
 		return
 	}
-	rows, err := tx.Query("SELECT display_name,started_at,COALESCE(ended_at_ms,last_chunk_at*1000),COALESCE(transcript,''),shared_microphone FROM audio_streams WHERE run_id=? ORDER BY started_at,id", run.ID)
+	rows, err := tx.Query("SELECT display_name,started_at,COALESCE(ended_at_ms,last_chunk_at*1000),COALESCE(transcript,''),shared_microphone FROM audio_streams WHERE run_id=? AND excluded_at IS NULL ORDER BY started_at,id", run.ID)
 	if err != nil {
 		return
 	}
@@ -1017,7 +1207,10 @@ func (app *App) finishRun(run *captureRun) {
 		TimePrecision   string    `json:"time_precision"`
 		CoverageScope   string    `json:"coverage_scope"`
 		MeetingCoverage string    `json:"meeting_coverage"`
-	}{Source: "browser-capture", Complete: true, Shared: hasShared, TimePrecision: "segment", CoverageScope: "finalized_uploaded_streams", MeetingCoverage: "unverified"}
+		ExcludedStreams int       `json:"excluded_streams,omitempty"`
+		ExcludedAudioMS int64     `json:"excluded_audio_ms,omitempty"`
+	}{Source: "browser-capture", Complete: excluded == 0, Shared: hasShared, TimePrecision: "segment", CoverageScope: "finalized_uploaded_streams", MeetingCoverage: "unverified",
+		ExcludedStreams: excluded, ExcludedAudioMS: excludedMS}
 	if hasWindow {
 		doc.TimePrecision = "window"
 	}

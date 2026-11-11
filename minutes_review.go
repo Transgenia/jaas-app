@@ -51,6 +51,7 @@ func (app *App) loadMinutesReview(m *Minutes, t *Transcription) (*minutesReview,
 		return nil, err
 	}
 	delete(fields, "metrics")
+	delete(fields, "review_warnings") // derived from the transcript; recomputed below
 	if string(fields["commercial_signals"]) == "null" {
 		delete(fields, "commercial_signals")
 	}
@@ -92,7 +93,7 @@ func omitUnverified(r *MinutesResult, issues []evidenceIssue) {
 		r.CommercialSignals = keepVerified(r.CommercialSignals, bad["commercial_signals"])
 	}
 	if len(issues) > 0 {
-		r.ReviewWarnings = []string{fmt.Sprintf("Durante la revisión se excluyeron %d elementos cuya evidencia no pudo verificarse. La lista de tareas puede estar incompleta; contrástala con la transcripción antes de compartirla. El resumen sigue siendo un borrador generado por IA.", len(issues))}
+		r.ReviewWarnings = append(r.ReviewWarnings, fmt.Sprintf("Durante la revisión se excluyeron %d elementos cuya evidencia no pudo verificarse. La lista de tareas puede estar incompleta; contrástala con la transcripción antes de compartirla. El resumen sigue siendo un borrador generado por IA.", len(issues)))
 	}
 }
 

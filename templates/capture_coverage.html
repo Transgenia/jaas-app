@@ -4,11 +4,14 @@
 {{if .Reports}}<ul>{{range .Reports}}<li><strong>{{.Name}}</strong> (nombre declarado en esta conexión):
 {{if eq .Choice "disabled"}}entró con la captura desactivada. Su micrófono no se incluyó desde esta conexión; esto no es un fallo de transcripción.
 {{else if eq .Choice "unsupported"}}su navegador no admitió la captura de audio.
-{{else}}activó la captura; {{.Streams}} pista(s) recibida(s).{{if not .Streams}} No se recibió audio desde esta conexión. Puede haber permanecido silenciada o no haber completado la subida; no se atribuye a una negativa del participante.{{end}}{{end}}
+{{else}}activó la captura; {{.Streams}} pista(s) recibida(s).{{if not .Streams}} No se recibió audio desde esta conexión. Puede haber permanecido silenciada o no haber completado la subida; no se atribuye a una negativa del participante.{{end}}
+{{if .Paused}} El navegador reportó el micrófono silenciado en Jitsi durante {{.Paused}}{{if .Connected}} de {{.Connected}} de conexión{{end}} ({{.PauseCount}} pausa(s)). La captura se pausa mientras dura el silencio: de ese lapso no hay audio. El reporte no indica quién silenció el micrófono.{{end}}{{end}}
 {{if eq .Issue "permission_denied"}} El navegador reportó que no concedió acceso al micrófono.
 {{else if eq .Issue "device_error"}} El navegador reportó un problema con el dispositivo o la grabación.
 {{else if eq .Issue "upload_failed"}} El navegador reportó un fallo al subir o cerrar el audio.{{end}}</li>{{end}}</ul>
 {{else}}<p class="notice">Esta sesión no tiene elecciones de captura registradas. No se puede afirmar que alguien rechazó compartir audio. Las versiones anteriores no guardaban esta elección.</p>{{end}}
 {{if .UnknownStreams}}<p>{{.UnknownStreams}} pista(s) proceden de conexiones sin elección registrada.</p>{{end}}
+{{if .SilentStreams}}<p>{{.SilentStreams}} pista(s) no contienen voz reconocible según el servicio de transcripción; no aportan texto a la minuta.</p>{{end}}
+{{if .ExcludedStreams}}<p class="notice">{{.ExcludedStreams}} pista(s) quedaron fuera por decisión del anfitrión después de fallar su transcripción. La minuta no incluye ese audio.</p>{{end}}
 <p class="muted">La minuta usa exclusivamente el audio recibido. Las decisiones de captura no demuestran quién habló físicamente en un micrófono compartido.</p>
 </section>{{end}}{{end}}

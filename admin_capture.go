@@ -5,6 +5,7 @@ import (
 	"embed"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
@@ -23,6 +24,7 @@ type sessionFilter struct {
 type sessionRow struct {
 	CaptureID, MinutesID                              int64
 	Room, Session, Client, Project, Organizer, Status string
+	Note                                              string // why a capture needs review
 	Started                                           time.Time
 	AudioBytes                                        int64
 	Shared                                            bool
@@ -36,15 +38,16 @@ const sessionsSQL = `WITH sessions AS (
  WHEN m.status IS NOT NULL THEN m.status WHEN r.status='failed' THEN 'failed'
  WHEN r.processing_approved_at IS NULL THEN 'pending' ELSE 'processing' END state,
  r.started_at started,r.shared_microphone shared,
- (SELECT COALESCE(SUM(s.bytes),0) FROM audio_streams s WHERE s.run_id=r.id AND s.purged_at IS NULL) audio_bytes,o.owner_email owner
+ (SELECT COALESCE(SUM(s.bytes),0) FROM audio_streams s WHERE s.run_id=r.id AND s.purged_at IS NULL) audio_bytes,o.owner_email owner,
+ CASE WHEN m.id IS NULL AND r.status='failed' THEN COALESCE(r.error,'') ELSE '' END note
  FROM capture_runs r JOIN rooms o ON o.slug=r.room_slug
  LEFT JOIN minutes m ON m.room_slug=r.room_slug AND m.session_id='captura-'||r.id
  UNION ALL
  SELECT 0,m.id,m.room_slug,m.session_id,'','',o.owner_email,
- CASE WHEN m.cancelled_at IS NOT NULL THEN 'cancelled' ELSE m.status END,m.meeting_at,0,0,o.owner_email
+ CASE WHEN m.cancelled_at IS NOT NULL THEN 'cancelled' ELSE m.status END,m.meeting_at,0,0,o.owner_email,''
  FROM minutes m JOIN rooms o ON o.slug=m.room_slug
  WHERE NOT EXISTS(SELECT 1 FROM capture_runs r WHERE r.room_slug=m.room_slug AND m.session_id='captura-'||r.id)
-) SELECT capture_id,minutes_id,room,session,client,project,organizer,state,started,shared,audio_bytes FROM sessions WHERE 1=1`
+) SELECT capture_id,minutes_id,room,session,client,project,organizer,state,started,shared,audio_bytes,note FROM sessions WHERE 1=1`
 
 func dateBound(value string, loc *time.Location, end bool) (int64, error) {
 	if value == "" {
@@ -120,7 +123,7 @@ func (db *DB) searchSessions(f sessionFilter, owner string, all bool, loc *time.
 	for rows.Next() {
 		var s sessionRow
 		var at int64
-		if err := rows.Scan(&s.CaptureID, &s.MinutesID, &s.Room, &s.Session, &s.Client, &s.Project, &s.Organizer, &s.Status, &at, &s.Shared, &s.AudioBytes); err != nil {
+		if err := rows.Scan(&s.CaptureID, &s.MinutesID, &s.Room, &s.Session, &s.Client, &s.Project, &s.Organizer, &s.Status, &at, &s.Shared, &s.AudioBytes, &s.Note); err != nil {
 			return nil, false, err
 		}
 		s.Started = time.Unix(at, 0)
@@ -212,6 +215,56 @@ func (app *App) handleApproveCapture(w http.ResponseWriter, r *http.Request) {
 	app.wakeWorker()
 	captureRedirect(w, r, "Procesamiento aprobado. Las llamadas de IA generan consumo.")
 }
+
+// captureRecoveryError explains why a failed capture cannot be retried or
+// continued. Nothing was changed and no AI request was made.
+func captureRecoveryError(w http.ResponseWriter, err error) {
+	message := "No se pudo recuperar la captura. No se cambió nada ni se llamó a la IA."
+	switch {
+	case errors.Is(err, ErrCaptureNotRecoverable):
+		message = "Esta captura no tiene pistas fallidas pendientes de recuperar."
+	case errors.Is(err, ErrCaptureNoTranscript):
+		message = "No queda ninguna pista transcrita con la cual continuar. Reintenta las pistas fallidas o cancela el análisis."
+	case errors.Is(err, ErrCaptureCancelled):
+		message = "El análisis de esta captura fue cancelado."
+	case errors.Is(err, ErrCaptureNotApproved):
+		message = "La captura todavía no se ha enviado a procesar."
+	case errors.Is(err, ErrCaptureActive):
+		message = "La captura todavía se está procesando. Vuelve a intentarlo en un momento."
+	}
+	http.Error(w, message, http.StatusConflict)
+}
+
+func (app *App) handleRetryCapture(w http.ResponseWriter, r *http.Request) {
+	run, ok := app.managedCapture(w, r)
+	if !ok {
+		return
+	}
+	n, err := app.RetryFailedStreams(run.ID)
+	if err != nil {
+		captureRecoveryError(w, err)
+		return
+	}
+	slog.Info("admin: capture tracks retried", "capture", run.ID, "tracks", n)
+	app.wakeWorker()
+	captureRedirect(w, r, fmt.Sprintf("Se reenviaron %d pista(s) a transcripción. Las llamadas de IA generan consumo.", n))
+}
+
+func (app *App) handleExcludeFailedStreams(w http.ResponseWriter, r *http.Request) {
+	run, ok := app.managedCapture(w, r)
+	if !ok {
+		return
+	}
+	n, err := app.DB.ExcludeFailedStreams(run.ID)
+	if err != nil {
+		captureRecoveryError(w, err)
+		return
+	}
+	slog.Info("admin: capture tracks excluded", "capture", run.ID, "tracks", n)
+	app.wakeWorker()
+	captureRedirect(w, r, fmt.Sprintf("Se continuará sin %d pista(s) fallida(s). La minuta indicará que falta ese audio.", n))
+}
+
 func (app *App) handleCancelCapture(w http.ResponseWriter, r *http.Request) {
 	run, ok := app.managedCapture(w, r)
 	if !ok {
@@ -286,9 +339,33 @@ func (app *App) handleCancelMinutes(w http.ResponseWriter, r *http.Request) {
 }
 
 type audioRow struct {
-	ID     string
-	Bytes  int64
-	Purged bool
+	ID       string
+	Bytes    int64
+	Purged   bool
+	Started  time.Time
+	Duration string
+	State    string // host-facing label
+	Error    string
+	Failed   bool
+}
+
+// audioState is what the host reads; it never claims more than the record.
+func audioState(status string, excluded, silent, approved bool) string {
+	switch {
+	case excluded:
+		return "excluida por el anfitrión"
+	case status == "failed":
+		return "transcripción fallida"
+	case status == "transcribed" && silent:
+		return "sin voz reconocible"
+	case status == "transcribed":
+		return "transcrita"
+	case status == "closed" && approved:
+		return "en cola de transcripción"
+	case status == "closed":
+		return "recibida"
+	}
+	return "en captura"
 }
 
 func (app *App) handleCaptureAudioList(w http.ResponseWriter, r *http.Request) {
@@ -296,18 +373,38 @@ func (app *App) handleCaptureAudioList(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	rows, err := app.DB.conn.Query("SELECT id,bytes,purged_at IS NOT NULL FROM audio_streams WHERE run_id=? ORDER BY started_at", run.ID)
+	rows, err := app.DB.conn.Query(`SELECT id,bytes,purged_at IS NOT NULL,started_at,COALESCE(ended_at_ms,last_chunk_at*1000),status,COALESCE(error,''),
+	 excluded_at IS NOT NULL,COALESCE(transcript,'') IN ('','[]','null') FROM audio_streams WHERE run_id=? ORDER BY started_at,id`, run.ID)
 	if err != nil {
 		app.serverError(w, "audio list", err)
 		return
 	}
 	defer rows.Close()
 	var files []audioRow
+	failed, retryable, transcribed := 0, 0, 0
 	for rows.Next() {
 		var a audioRow
-		if err := rows.Scan(&a.ID, &a.Bytes, &a.Purged); err != nil {
+		var startMS, endMS int64
+		var status string
+		var excluded, silent bool
+		if err := rows.Scan(&a.ID, &a.Bytes, &a.Purged, &startMS, &endMS, &status, &a.Error, &excluded, &silent); err != nil {
 			app.serverError(w, "audio rows", err)
 			return
+		}
+		a.Started = time.UnixMilli(startMS)
+		if endMS > startMS {
+			a.Duration = fmtDuration(float64(endMS-startMS) / 1000)
+		}
+		a.State = audioState(status, excluded, silent, !run.ApprovedAt.IsZero())
+		a.Failed = status == "failed" && !excluded
+		if a.Failed {
+			failed++
+			if !a.Purged {
+				retryable++
+			}
+		}
+		if status == "transcribed" {
+			transcribed++
 		}
 		files = append(files, a)
 	}
@@ -320,7 +417,10 @@ func (app *App) handleCaptureAudioList(w http.ResponseWriter, r *http.Request) {
 		app.serverError(w, "capture coverage", err)
 		return
 	}
-	app.render(w, 200, "capture_audio.html", map[string]any{"Run": run, "Files": files, "Coverage": coverage})
+	// Recovery is offered only where RetryFailedStreams/ExcludeFailedStreams accept it.
+	recoverable := run.Status == "failed" && !run.ApprovedAt.IsZero() && run.CancelledAt.IsZero() && failed > 0
+	app.render(w, 200, "capture_audio.html", map[string]any{"Run": run, "Files": files, "Coverage": coverage, "CSRF": adminFrom(r).CSRFToken,
+		"Failed": failed, "CanRetry": recoverable && retryable > 0, "CanExclude": recoverable && transcribed > 0})
 }
 func (app *App) handlePrivateAudio(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("stream")
