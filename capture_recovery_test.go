@@ -484,3 +484,121 @@ func TestCaptureRecipientsIncludeLateJoiners(t *testing.T) {
 		t.Fatalf("someone who entered after the capture ended is proposed: %v", got)
 	}
 }
+
+const streamC = "CCCCCCCCCCCCCCCCCCCCCCCC"
+
+// longCapture uploads two chunks 90 seconds apart, so the track has more than
+// a minute of audio, and finalizes the run it lands in.
+func longCapture(t *testing.T, e *testEnv, stream string) int64 {
+	t.Helper()
+	seedWorkflow(t, e, stream, []byte("VOICE"), CaptureHints{})
+	e.advance(90 * time.Second)
+	if err := e.app.AppendChunk(workflowParticipant(), stream, 1, e.now, []byte("more")); err != nil {
+		t.Fatal(err)
+	}
+	var run int64
+	if err := e.app.DB.conn.QueryRow("SELECT run_id FROM audio_streams WHERE id=?", stream).Scan(&run); err != nil {
+		t.Fatal(err)
+	}
+	finalizeAllCaptureStreams(t, e, run)
+	return run
+}
+
+// Automatic processing is the operator's standing approval. Without it a
+// finished capture waits; with it the capture goes through the same approval.
+func TestFinishedCaptureIsProcessedAutomaticallyOnlyWhenEnabled(t *testing.T) {
+	e, ft := captureEnv(t)
+	ft.byMark["VOICE"] = spokenFixture()
+	run := longCapture(t, e, streamA)
+	e.advance(30 * time.Minute)
+	drain(e)
+	if r, _ := e.app.DB.GetCaptureRun(run); r.Status != "open" || !r.ApprovedAt.IsZero() || ft.calls != 0 {
+		t.Fatalf("processed without approval or configuration: %+v calls=%d", r, ft.calls)
+	}
+	e.app.Config.CaptureAutoProcess = true
+	e.app.Config.CaptureAutoProcessAfter = 10 * time.Minute
+	drain(e)
+	r, _ := e.app.DB.GetCaptureRun(run)
+	if r.Status != "done" || r.ApprovedAt.IsZero() || ft.calls != 1 {
+		t.Fatalf("finished capture not processed automatically: %+v calls=%d", r, ft.calls)
+	}
+	if n := countRows(t, e, "minutes"); n != 1 {
+		t.Fatalf("minutes rows %d", n)
+	}
+	if !strings.Contains(e.logs.String(), "capture: processing approved automatically") {
+		t.Fatal("automatic approval left no trace")
+	}
+}
+
+func TestAutomaticProcessingLeavesDoubtfulCapturesToTheHost(t *testing.T) {
+	e, ft := captureEnv(t)
+	e.app.Config.CaptureAutoProcess = true
+	e.app.Config.CaptureAutoProcessAfter = 10 * time.Minute
+	open := func(run int64) bool {
+		r, err := e.app.DB.GetCaptureRun(run)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r.Status == "open" && r.ApprovedAt.IsZero()
+	}
+
+	// Seconds of audio: not worth a paid transcription nobody asked for.
+	seedWorkflow(t, e, streamA, []byte("VOICE"), CaptureHints{})
+	finalizeAllCaptureStreams(t, e, 1)
+	e.advance(40 * time.Minute)
+	drain(e)
+	if !open(1) {
+		t.Fatal("a capture with no meaningful audio was processed")
+	}
+
+	// The meeting only just ended: people may still come back.
+	recent := longCapture(t, e, streamB)
+	e.advance(5 * time.Minute)
+	drain(e)
+	if !open(recent) {
+		t.Fatal("processed before the grace period")
+	}
+	// A cancelled capture stays cancelled.
+	if err := e.app.DB.CancelCapture(recent); err != nil {
+		t.Fatal(err)
+	}
+	e.advance(40 * time.Minute)
+	drain(e)
+	if r, _ := e.app.DB.GetCaptureRun(recent); !r.ApprovedAt.IsZero() {
+		t.Fatal("automatic processing overrode a cancellation")
+	}
+
+	// A capture left behind for more than a day is a decision for a person.
+	old := longCapture(t, e, streamC)
+	e.advance(25 * time.Hour)
+	drain(e)
+	if !open(old) {
+		t.Fatal("an old pending capture was processed automatically")
+	}
+	if ft.calls != 0 {
+		t.Fatalf("provider calls %d", ft.calls)
+	}
+}
+
+// Participants and hosts are told which mode applies.
+func TestNoticesMatchTheProcessingMode(t *testing.T) {
+	e := newTestEnv(t)
+	b, csrf := e.loginAdmin()
+	e.createRoom(b, csrf, "notice-room")
+	join := e.browser().do("GET", "/m/notice-room", nil).Body.String()
+	if !strings.Contains(join, "Sólo tras la aprobación del anfitrión") || strings.Contains(join, "automáticamente a OpenAI") {
+		t.Fatal("manual mode notice")
+	}
+	if list := b.do("GET", "/admin/captures", nil).Body.String(); strings.Contains(list, "Procesamiento automático activado") {
+		t.Fatal("host told of automatic processing while it is off")
+	}
+	e.app.Config.CaptureAutoProcess = true
+	e.app.Config.CaptureAutoProcessAfter = 10 * time.Minute
+	join = e.browser().do("GET", "/m/notice-room", nil).Body.String()
+	if strings.Contains(join, "Sólo tras la aprobación del anfitrión") || !strings.Contains(join, "Al terminar la reunión se envía automáticamente a OpenAI") {
+		t.Fatal("automatic mode notice")
+	}
+	if list := b.do("GET", "/admin/captures", nil).Body.String(); !strings.Contains(list, "se procesa con IA 10 minutos después") {
+		t.Fatal("host not told of automatic processing")
+	}
+}

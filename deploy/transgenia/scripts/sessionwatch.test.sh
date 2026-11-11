@@ -120,6 +120,18 @@ check "dry run prints the notice and changes nothing" 'grep -q "simulación" "$T
 watch --resend 2 >"$T/out"
 check "resend repeats the notice of one capture" '[ "$(mails)" = 6 ] && last | grep -q "captura lista para procesar"'
 
+# 8: with automatic processing, a capture about to be processed by itself is
+# not announced; one that was left behind is, and the mail says why
+capture 8 sala-a 1260 60
+stream 8 30 closed NULL
+joined 8 enabled
+before=$(mails)
+SESSIONWATCH_AUTO=1 watch >"$T/out"
+check "automatic mode waits before announcing a pending capture" '[ "$(mails)" = "$before" ]'
+sql "UPDATE capture_runs SET last_activity_at=$NOW-2400 WHERE id=8"
+SESSIONWATCH_AUTO=1 watch >"$T/out"
+check "and explains why one was left for the host" '[ "$(mails)" = $((before + 1)) ] && last | grep -q "No se procesó sola"'
+
 echo
 if [ "$fails" = 0 ]; then
 	echo "sessionwatch.sh: todas las comprobaciones pasaron"

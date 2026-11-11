@@ -66,6 +66,15 @@
 		return "Captura en pausa desde hace " + minutes + " min: el micrófono está silenciado en Jitsi. "
 			+ (shared ? "Nadie en esta sala queda capturado hasta que lo actives." : "Actívalo para seguir capturando tu audio.")
 	}
+	// What a participant is told about when their audio reaches the AI. It must
+	// match the server's mode: the host's click, or automatically after the end.
+	function captureNotices(autoProcess) {
+		return autoProcess
+			? { recording: "Capturando audio; se procesará con IA al terminar la reunión",
+				saved: "La reunión terminó. Audio recibido; se procesará con IA automáticamente." }
+			: { recording: "Capturando audio; procesamiento requiere aprobación",
+				saved: "La reunión terminó. Audio recibido para revisión; el procesamiento requiere aprobación." }
+	}
 	// enqueue is the capture-wide serial queue. A recorder closes only after its
 	// final dataavailable event; its immutable manifest is sent behind those bytes.
 	function createStreamUploadSession(transport) {
@@ -116,5 +125,5 @@
 	return { BITRATE: BITRATE, CHUNK_MS: CHUNK_MS, ROTATE_MS: ROTATE_MS, normalize: normalize, constraints: constraints,
 		chooseMime: chooseMime, recorderOptions: recorderOptions, signalStats: signalStats, signalTest: signalTest,
 		createParticipationReporter: createParticipationReporter, metadata: metadata, matchingDevice: matchingDevice, createStreamUploadSession: createStreamUploadSession,
-		pauseReminder: pauseReminder }
+		pauseReminder: pauseReminder, captureNotices: captureNotices }
 })

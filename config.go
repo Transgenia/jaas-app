@@ -43,9 +43,14 @@ type Config struct {
 	TranscribePrompt     string
 	AudioRetentionDays   int
 	AudioMaxStorageBytes int64
-	WorkerMaxAttempts    int
-	MaxTranscriptSize    int64 // bytes downloaded from JaaS
-	MaxTranscriptChars   int   // characters sent to the model
+	// CaptureAutoProcess is the operator's standing approval: a capture whose
+	// meeting ended CaptureAutoProcessAfter ago is processed without the
+	// host's click. Off by default; participants are told which mode applies.
+	CaptureAutoProcess      bool
+	CaptureAutoProcessAfter time.Duration
+	WorkerMaxAttempts       int
+	MaxTranscriptSize       int64 // bytes downloaded from JaaS
+	MaxTranscriptChars      int   // characters sent to the model
 
 	DownloadAllowedHosts []string
 	TrustedProxies       []*net.IPNet
@@ -280,6 +285,12 @@ func LoadConfig() (*Config, error) {
 		return nil, fmt.Errorf("AUDIO_MAX_STORAGE_MB must be between 100 and 1048576")
 	}
 	cfg.AudioMaxStorageBytes = int64(audioStorageMB) << 20
+	cfg.CaptureAutoProcess = os.Getenv("CAPTURE_AUTO_PROCESS") == "true"
+	autoAfter, err := envInt("CAPTURE_AUTO_PROCESS_AFTER_MINUTES", 10)
+	if err != nil || autoAfter < 3 || autoAfter > 240 {
+		return nil, fmt.Errorf("CAPTURE_AUTO_PROCESS_AFTER_MINUTES must be between 3 and 240")
+	}
+	cfg.CaptureAutoProcessAfter = time.Duration(autoAfter) * time.Minute
 	if cfg.WorkerMaxAttempts, err = envInt("WORKER_MAX_ATTEMPTS", 5); err != nil {
 		return nil, err
 	}

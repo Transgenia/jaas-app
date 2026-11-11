@@ -229,7 +229,14 @@ origins. Pistas rotate every ten minutes and upload original WebM chunks every
 
 An explicit final manifest proves received chunk count, size and hashes. Idle
 time alone does not establish completeness. The host approves processing at
-`/admin/captures`; before approval, no STT or summary request is started. The
+`/admin/captures`; before approval, no STT or summary request is started.
+With `CAPTURE_AUTO_PROCESS=true` in `meetings.env` that approval is standing:
+ten minutes after the last audio or connection report (or
+`CAPTURE_AUTO_PROCESS_AFTER_MINUTES`) the worker approves the capture through
+the same checks. It leaves for the host any capture with under a minute of
+audio, a track without its final manifest, a cancellation, or more than a day
+old. The join and meeting pages tell participants which mode applies; sending
+minutes to participants always needs the host. The
 single ASR is `gpt-transcribe`, without Whisper fallback or parallel JaaS
 transcription processing. Results have window precision, not word timestamps;
 speaker identity is unverified and individual metrics are withheld.

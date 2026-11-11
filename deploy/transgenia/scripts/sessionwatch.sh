@@ -22,7 +22,16 @@ NOTIFY=${SESSIONWATCH_NOTIFY:-$BASE/bin/notify.sh}
 FALLBACK_TO=${SESSIONWATCH_TO:-admin@transgenia.org}
 URL=${SESSIONWATCH_URL:-https://meet.transgenia.org}
 UTC_OFFSET=${SESSIONWATCH_UTC_OFFSET:--6 hours} # display only; Mexico City
-IDLE=${SESSIONWATCH_IDLE:-600}                  # seconds without activity before a meeting counts as ended
+CONTAINER=${TGN_CONTAINER:-tgn-meetings}
+# With automatic processing, a capture still waiting after the grace period
+# was left for a person on purpose. Wait longer before announcing it, so the
+# ones about to be processed by themselves are not announced at all.
+AUTO=${SESSIONWATCH_AUTO:-0}
+if docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$CONTAINER" 2>/dev/null | grep -qx 'CAPTURE_AUTO_PROCESS=true'; then
+	AUTO=1
+fi
+if [ "$AUTO" = 1 ]; then default_idle=1800; else default_idle=600; fi
+IDLE=${SESSIONWATCH_IDLE:-$default_idle} # seconds without activity before a meeting counts as ended
 STATE_DIR=${STATE_DIRECTORY:-/var/lib/tgn-meetings-sessionwatch}
 STATE=$STATE_DIR/state
 
@@ -167,6 +176,9 @@ while IFS=$'\x1f' read -r id room owner started status approved cancelled error 
 	por_procesar)
 		subject="captura lista para procesar"
 		action="Abre «Sesiones, audio y minutas» y pulsa «Procesar con IA»."
+		if [ "$AUTO" = 1 ]; then
+			action="No se procesó sola: tiene menos de un minuto de audio o alguna pista no cerró. Decide en «Sesiones, audio y minutas» si la procesas o la cancelas."
+		fi
 		;;
 	sin_audio)
 		subject="la reunión terminó sin audio"

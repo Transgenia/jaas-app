@@ -72,6 +72,14 @@ func (app *App) templateFuncs() template.FuncMap {
 			}
 			return 30
 		},
+		// Minutes after a meeting ends before its capture is processed without
+		// the host's click; 0 when processing waits for the host.
+		"autoProcessMinutes": func() int {
+			if !app.Config.CaptureAutoProcess {
+				return 0
+			}
+			return int(app.Config.CaptureAutoProcessAfter / time.Minute)
+		},
 		"sessionStatus": func(s string) string {
 			labels := map[string]string{"pending": "Pendiente de procesar", "queued": "En cola", "processing": "Procesando", "ready": "Lista para revisar", "failed": "Revisión requerida", "cancelled": "Cancelada"}
 			if label, ok := labels[s]; ok {
