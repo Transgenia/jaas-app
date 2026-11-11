@@ -443,3 +443,44 @@ func TestLocalGateFailureDoesNotOfferACostlyRetry(t *testing.T) {
 		t.Fatal("page still offers a retry that cannot succeed")
 	}
 }
+
+// The minutes of a capture are dated at its start. People who join after the
+// first minutes still took part and must be offered as recipients; someone
+// who enters the room long after the capture ended must not.
+func TestCaptureRecipientsIncludeLateJoiners(t *testing.T) {
+	e, ft := captureEnv(t)
+	ft.byMark["VOICE"] = spokenFixture()
+	early := joinCaptureRoom(t, e, "sala-captura", "Ana", "ana@cliente.example", false)
+	if status := early.upload(e, "sala-captura", streamA, 0, []byte("VOICE"), early.csrf); status != 204 {
+		t.Fatalf("first chunk: %d", status)
+	}
+	e.advance(40 * time.Minute)
+	joinCaptureRoom(t, e, "sala-captura", "Tarde", "tarde@cliente.example", false)
+	e.advance(50 * time.Minute)
+	if status := early.upload(e, "sala-captura", streamA, 1, []byte("end"), early.csrf); status != 204 {
+		t.Fatalf("last chunk: %d", status)
+	}
+	approveWorkflow(t, e, 1)
+	drain(e)
+	e.advance(2 * time.Hour)
+	joinCaptureRoom(t, e, "sala-captura", "Después", "despues@cliente.example", false)
+
+	ms, _ := e.app.DB.ListMinutes("sala-captura")
+	if len(ms) != 1 {
+		t.Fatalf("minutes: %+v", ms)
+	}
+	rs, err := e.app.DB.ProposedRecipients(&ms[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]bool{}
+	for _, r := range rs {
+		got[r.Email] = true
+	}
+	if !got["ana@cliente.example"] || !got["tarde@cliente.example"] {
+		t.Fatalf("participant who joined 40 minutes in is not proposed: %v", got)
+	}
+	if got["despues@cliente.example"] {
+		t.Fatalf("someone who entered after the capture ended is proposed: %v", got)
+	}
+}
