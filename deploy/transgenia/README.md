@@ -6,20 +6,49 @@ minutes queue and an OpenAI Responses API worker. Minutes are **drafts for
 human review**: participant e-mail requires host approval and the service does
 not create tasks. See [PLAN-1.1.md](PLAN-1.1.md) for the current migration gates.
 
+## Where things live
+
+Everything that runs is under `/opt/transgenia-meetings`. Nothing is served
+from a web root: nginx only proxies to the container.
+
+| What | Where |
+| --- | --- |
+| Running version | `IMAGE_TAG` in `/opt/transgenia-meetings/.env` |
+| Source checkout used to build | `/opt/transgenia-meetings/src` (branch `transgenia/production`) |
+| Deploy, rollback, status | `/opt/transgenia-meetings/bin/deploy.sh` |
+| Container | `tgn-meetings`, Compose project `transgenia-meetings`, `127.0.0.1:8370` |
+| Database and source audio | `/opt/transgenia-meetings/data/` (`jaas.db`, `audio/`) |
+| Backups | `/opt/transgenia-meetings/backups/` (daily, verified, 14 kept) |
+| Application logs | `docker logs tgn-meetings` |
+| Backup and health-check logs | `journalctl -u tgn-meetings-backup -u tgn-meetings-healthwatch` |
+| Public entry | nginx server `meet.transgenia.org` (see `nginx/`) behind Cloudflare |
+| Timers | `tgn-meetings-backup.timer`, `tgn-meetings-healthwatch.timer` (see `systemd/`) |
+
+Runbooks for specific changes: [MINUTES-RECOVERY.md](MINUTES-RECOVERY.md),
+[CAPTURE-RECOVERY.md](CAPTURE-RECOVERY.md), [ODOO-SYNC.md](ODOO-SYNC.md),
+[PROD-PILOT-HANDOFF.md](PROD-PILOT-HANDOFF.md) and the migration gates in
+[PLAN-1.1.md](PLAN-1.1.md).
+
 ## Layout on the server
 
 ```
 /opt/transgenia-meetings/            root:root 0755
 ├── compose.yaml                     from deploy/transgenia/compose.yaml
+├── compose.odoo-sync.yaml           overlay, when the Odoo sync is enabled
+├── compose.odoo-owner-map.yaml      overlay, when the owner map is enabled
 ├── .env                             IMAGE_TAG, TGN_UID, TGN_GID (non-secret)
+├── .deploy-state                    previous and current tag, written by deploy.sh
 ├── meetings.env                     from meetings.env.example, root:tgn-meetings 0640
 ├── secrets/                         root:tgn-meetings 0750, files 0440
 │   ├── jaas_private_key             JaaS API key (PEM)
 │   ├── jaas_webhook_secret          JaaS webhook endpoint secret ("Reveal secret")
 │   ├── openai_api_key               dedicated project key for this service
+│   ├── smtp_password                outgoing mail
+│   ├── odoo_api_key, odoo_owner_map only with the Odoo overlays
 │   └── admin_initial_password       only read on first start (bootstrap)
-├── data/                            tgn-meetings 0700 — SQLite (WAL)
+├── data/                            tgn-meetings 0700 — SQLite (WAL) and audio/
 ├── backups/                         root 0700 — verified snapshots + sha256
+├── src/                             checkout of this repository, built by deploy.sh
 └── bin/                             scripts from deploy/transgenia/scripts
 ```
 
@@ -28,21 +57,68 @@ Container `tgn-meetings` (Compose project `transgenia-meetings`): non-root
 capabilities dropped, `no-new-privileges`, 512 MB / 128 pids, published only on
 `127.0.0.1:8370`.
 
-## Build and deploy a commit
+## Deploy, roll back, status
+
+Merge the change into `transgenia/production`, then on the server, as root:
 
 ```sh
-cd <checkout del fork> && git checkout <sha>
-docker build --target test .                                # must pass
-docker build --build-arg VERSION=$(git rev-parse --short HEAD) -t transgenia-meetings:$(git rev-parse --short HEAD) .
-sed -i "s/^IMAGE_TAG=.*/IMAGE_TAG=$(git rev-parse --short HEAD)/" /opt/transgenia-meetings/.env
-cd /opt/transgenia-meetings && docker compose up -d && docker compose ps
+/opt/transgenia-meetings/bin/deploy.sh status            # what runs now
+/opt/transgenia-meetings/bin/deploy.sh deploy --dry-run  # what would happen
+/opt/transgenia-meetings/bin/deploy.sh deploy            # tip of transgenia/production
+/opt/transgenia-meetings/bin/deploy.sh rollback          # back to the previous tag
 ```
 
+`deploy` refuses a commit that is not merged into the production branch or a
+checkout with local changes. It then, in order:
+
+1. updates `src/` to the commit;
+2. runs the Dockerfile `test` stage and builds `transgenia-meetings:release-<sha12>`;
+3. stops if a meeting, a capture, minutes or mail are in progress (`--force` overrides);
+4. runs `bin/backup.sh` — before `IMAGE_TAG` changes, because the snapshot is
+   verified with the image that is still running;
+5. migrates a private copy of that backup with the new image, compares every
+   table, checks that the running image can still open the migrated database
+   (otherwise it stops unless `--accept-one-way`), and deletes the copy;
+6. changes only `IMAGE_TAG` (keeping `.env.bak-<timestamp>`) and recreates the
+   `meetings` service with the Compose files the running container was created
+   from, overlays included;
+7. waits for `healthy` and checks the image, the commit and `verify-db`. If any
+   check fails it puts the previous tag back and says so.
+
+`rollback` changes the image only; it never restores a database. Review the
+work queues and the rollback contract in PLAN-1.1.md first: an older worker
+does not enforce newer approval or cancellation columns. `--to TAG` picks a
+specific image from `docker images transgenia-meetings`.
+
+Install or update the script itself after it changes in the repository:
+
+```sh
+install -o root -g root -m 0755 /opt/transgenia-meetings/src/deploy/transgenia/scripts/deploy.sh /opt/transgenia-meetings/bin/deploy.sh
+```
+
+`deploy/transgenia/scripts/deploy.test.sh` exercises the whole flow against a
+throwaway directory and a fake `docker`; it does not run in CI.
+
 Never use the upstream `update` command (removed here): updates go through a
-reviewed commit, the test stage and a tagged image. Roll back by setting the
-previous `IMAGE_TAG` only after reviewing the database/work queues and the
-rollback contract in PLAN-1.1.md. An older worker does not enforce the new
-approval/cancellation columns; a blind image rollback can start unwanted work.
+reviewed commit, the test stage and a tagged image.
+
+<details>
+<summary>The same deploy by hand</summary>
+
+```sh
+cd /opt/transgenia-meetings/src && git fetch origin && git checkout --detach origin/transgenia/production
+SHA=$(git rev-parse HEAD); TAG=release-${SHA:0:12}
+docker build --target test .                                # must pass
+docker build --build-arg VERSION="$SHA" -t "transgenia-meetings:$TAG" .
+/opt/transgenia-meetings/bin/backup.sh                      # before changing IMAGE_TAG
+cd /opt/transgenia-meetings && cp -p .env ".env.bak-$(date -u +%Y%m%dT%H%M%SZ)"
+sed -i "s/^IMAGE_TAG=.*/IMAGE_TAG=$TAG/" .env
+docker inspect --format '{{index .Config.Labels "com.docker.compose.project.config_files"}}' tgn-meetings
+docker compose --project-directory . --env-file .env -f <each file listed above> up -d meetings
+docker exec tgn-meetings /app/jaas-app version && docker exec tgn-meetings /app/jaas-app verify-db /data/jaas.db
+```
+
+</details>
 
 ## Secrets
 
