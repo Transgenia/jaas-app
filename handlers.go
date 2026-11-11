@@ -135,6 +135,8 @@ func (app *App) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("GET /admin/captures", cf(admin(app.handleCaptureSearch)))
 	mux.Handle("POST /admin/captures/{id}/approve", cf(admin(app.handleApproveCapture)))
 	mux.Handle("POST /admin/captures/{id}/cancel", cf(admin(app.handleCancelCapture)))
+	mux.Handle("POST /admin/captures/{id}/retry", cf(admin(app.handleRetryCapture)))
+	mux.Handle("POST /admin/captures/{id}/exclude-failed", cf(admin(app.handleExcludeFailedStreams)))
 	mux.Handle("POST /admin/captures/{id}/details", cf(admin(app.handleCaptureDetails)))
 	mux.Handle("GET /admin/captures/{id}/audio", cf(admin(app.handleCaptureAudioList)))
 	mux.Handle("GET /admin/audio/{stream}", cf(admin(app.handlePrivateAudio)))
@@ -885,6 +887,7 @@ func (app *App) handleViewMinutes(w http.ResponseWriter, r *http.Request) {
 	}
 	var review *minutesReview
 	var transcriptID int64
+	gate := ""
 	if t, err := app.DB.GetTranscriptionBySession(m.RoomSlug, m.SessionID); err == nil {
 		transcriptID = t.ID
 		if m.Status == "failed" && m.ResultJSON != "" {
@@ -893,9 +896,18 @@ func (app *App) handleViewMinutes(w http.ResponseWriter, r *http.Request) {
 				res = review.Result
 			}
 		}
+		if m.Status == "failed" && m.ResultJSON == "" {
+			// The worker runs this same local check before any AI call. While
+			// it fails, a retry cannot succeed and does not reach the provider.
+			if e := transcriptQuality(t.Data); e != nil {
+				gate = e.Error()
+			}
+		}
 	}
+	captureID, _ := captureIDFromSession(m.SessionID)
 	app.render(w, http.StatusOK, "minutes.html", map[string]any{
 		"Coverage": app.minutesCaptureCoverage(m), "Review": review, "TranscriptID": transcriptID, "M": m, "R": res, "CSRF": adminFrom(r).CSRFToken, "TZ": app.Config.DisplayTimezone.String(),
+		"Gate": gate, "CaptureID": captureID,
 		"Recipients": recipients, "MailEnabled": app.Mailer != nil, "Sent": r.URL.Query().Get("enviado"),
 	})
 }

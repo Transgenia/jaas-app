@@ -275,3 +275,25 @@ test("failed choice registration never starts capture", async () => {
   assert.equal(events.microphoneRequests, 0)
   assert.ok(events.every(event => event.kind === "end"))
 })
+
+test("a Jitsi mute is reported as a capture pause, not hidden behind heartbeats", async () => {
+  const events = await runMockMeeting()
+  assert.deepEqual(events.reports.map(report => report.event), ["joined", "paused", "ended"])
+  assert.ok(events.reports.every(report => report.choice === "enabled"))
+})
+
+test("a connection that declined capture never reports a pause", async () => {
+  const events = await runMockMeeting({ captureEnabled: false })
+  assert.ok(!events.reports.some(report => report.event === "paused" || report.event === "resumed"))
+})
+
+test("the pause reminder waits a minute and names the Jitsi microphone", () => {
+  assert.equal(policy.pauseReminder(0, true), "")
+  assert.equal(policy.pauseReminder(59999, false), "")
+  assert.equal(policy.pauseReminder(NaN, false), "")
+  const shared = policy.pauseReminder(9 * 60000 + 5000, true)
+  assert.match(shared, /desde hace 9 min/)
+  assert.match(shared, /silenciado en Jitsi/)
+  assert.match(shared, /Nadie en esta sala/)
+  assert.match(policy.pauseReminder(60000, false), /desde hace 1 min.*tu audio/)
+})

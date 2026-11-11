@@ -8,6 +8,27 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Fixed
+
+- A browser-capture window that the transcription provider answers with no text
+  is stored as a transcribed track without speech, with its request id and
+  usage, instead of failing the whole capture as an uncertain request
+- The minutes page no longer offers a paid retry when the failure is the local
+  transcript check, which a retry cannot pass and which never reaches the model
+
+### Added
+
+- Failed transcriptions log a bounded cause and the request id, and `ai_usage`
+  keeps both (`error_kind`), without provider or meeting text
+- Hosts can retry the failed tracks of a capture, or continue without them, from
+  the capture audio page; an excluded track is declared in the transcript, the
+  coverage panel and the minutes
+- The meeting page reports when capture is paused because the Jitsi microphone
+  is muted; the coverage panel shows the paused time and the in-meeting badge
+  repeats the warning after one minute
+- Schema 10: `ai_usage.error_kind`, `audio_streams.excluded_at` and pause
+  columns on `capture_participation`
+
 ## [0.1.0] - 2026-07-16
 
 ### Added

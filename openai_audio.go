@@ -102,6 +102,31 @@ func (e *audioTranscriptionError) Error() string {
 
 func (e *audioTranscriptionError) Unwrap() error { return e.cause }
 
+// The provider answered successfully but returned no text for the window.
+const audioKindEmptyTranscript = "empty transcript"
+
+// transcriptionFailureCause returns a bounded, content-free label and the safe
+// request identity for logs and usage records. It never carries provider or
+// customer text, so an unknown error is reported only as unclassified.
+func transcriptionFailureCause(err error) (cause, requestID string) {
+	var failure *audioTranscriptionError
+	var status *httpStatusError
+	switch {
+	case errors.As(err, &failure):
+		if failure.StatusCode != 0 {
+			return fmt.Sprintf("http %d", failure.StatusCode), failure.RequestID
+		}
+		return failure.Kind, failure.RequestID
+	case errors.As(err, &status):
+		return fmt.Sprintf("http %d", status.Code), ""
+	case errors.Is(err, context.Canceled):
+		return "request canceled", ""
+	case errors.Is(err, context.DeadlineExceeded):
+		return "request timed out", ""
+	}
+	return "unclassified", ""
+}
+
 func (e *audioTranscriptionError) Permanent() bool {
 	if e.StatusCode != 0 {
 		return e.StatusCode >= 400 && e.StatusCode < 500 && e.StatusCode != http.StatusTooManyRequests
@@ -251,7 +276,7 @@ func (t *openAITranscriber) Transcribe(ctx context.Context, audio []byte, filena
 	}
 	text := strings.TrimSpace(*raw.Text)
 	if text == "" {
-		return nil, &audioTranscriptionError{Kind: "empty transcript", RequestID: requestID, Usage: append(json.RawMessage(nil), usage...)}
+		return nil, &audioTranscriptionError{Kind: audioKindEmptyTranscript, RequestID: requestID, Usage: append(json.RawMessage(nil), usage...)}
 	}
 	detected := make([]string, 0, len(out.Languages))
 	for _, language := range out.Languages {

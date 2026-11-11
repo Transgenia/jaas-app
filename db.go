@@ -250,6 +250,14 @@ var migrations = []string{
 	 PRIMARY KEY(run_id,participant_key)
 	);
 	ALTER TABLE audio_streams ADD COLUMN participant_key TEXT NOT NULL DEFAULT '';`,
+	// v10: evidence for failed and paused captures. A pause is a browser
+	// observation; an excluded track is a host decision, never a transcript.
+	`ALTER TABLE ai_usage ADD COLUMN error_kind TEXT;
+	ALTER TABLE audio_streams ADD COLUMN excluded_at INTEGER;
+	ALTER TABLE capture_participation ADD COLUMN joined_at INTEGER;
+	ALTER TABLE capture_participation ADD COLUMN paused_since INTEGER;
+	ALTER TABLE capture_participation ADD COLUMN paused_seconds INTEGER NOT NULL DEFAULT 0;
+	ALTER TABLE capture_participation ADD COLUMN pause_count INTEGER NOT NULL DEFAULT 0;`,
 }
 
 func InitDB(path string) (*DB, error) {
