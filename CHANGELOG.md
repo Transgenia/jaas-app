@@ -28,6 +28,10 @@ and this project adheres to
   repeats the warning after one minute
 - Schema 10: `ai_usage.error_kind`, `audio_streams.excluded_at` and pause
   columns on `capture_participation`
+- `deploy/transgenia/scripts/deploy.sh`: one command to deploy a merged commit
+  (tests, image, backup, migration rehearsal, switch, verification with
+  automatic return to the previous image), plus `rollback`, `status` and
+  `--dry-run`; the deployment README now maps where everything lives
 
 ## [0.1.0] - 2026-07-16
 
