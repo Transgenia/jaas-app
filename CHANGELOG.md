@@ -35,6 +35,9 @@ and this project adheres to
   (tests, image, backup, migration rehearsal, switch, verification with
   automatic return to the previous image), plus `rollback`, `status` and
   `--dry-run`; the deployment README now maps where everything lives
+- `deploy/transgenia/scripts/sessionwatch.sh` and its timer: one e-mail to the
+  host per captured meeting whenever it needs a person or is finished, with
+  the audio, transcript, delivery and Odoo checks that were done by hand
 
 ## [0.1.0] - 2026-07-16
 

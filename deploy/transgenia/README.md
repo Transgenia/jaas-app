@@ -22,7 +22,8 @@ from a web root: nginx only proxies to the container.
 | Application logs | `docker logs tgn-meetings` |
 | Backup and health-check logs | `journalctl -u tgn-meetings-backup -u tgn-meetings-healthwatch` |
 | Public entry | nginx server `meet.transgenia.org` (see `nginx/`) behind Cloudflare |
-| Timers | `tgn-meetings-backup.timer`, `tgn-meetings-healthwatch.timer` (see `systemd/`) |
+| Timers | `tgn-meetings-backup.timer`, `tgn-meetings-healthwatch.timer`, `tgn-meetings-sessionwatch.timer` (see `systemd/`) |
+| What happened to each meeting | e-mail from `bin/sessionwatch.sh`; state in `/var/lib/tgn-meetings-sessionwatch/` |
 
 Runbooks for specific changes: [MINUTES-RECOVERY.md](MINUTES-RECOVERY.md),
 [CAPTURE-RECOVERY.md](CAPTURE-RECOVERY.md), [ODOO-SYNC.md](ODOO-SYNC.md),
@@ -119,6 +120,38 @@ docker exec tgn-meetings /app/jaas-app version && docker exec tgn-meetings /app/
 ```
 
 </details>
+
+## Session watch
+
+`bin/sessionwatch.sh` (every 5 minutes via `tgn-meetings-sessionwatch.timer`)
+e-mails the room owner, or `SESSIONWATCH_TO` when the room has none, once per
+change that needs a person or closes the loop: capture waiting to be
+processed, meeting that ended without audio, failed capture, minutes that need
+review, minutes ready, minutes delivered. Each mail carries the checks a person
+would otherwise do in the panel: minutes of audio against the length of the
+meeting, time capture was paused by a muted microphone, tracks without speech,
+words per minute of audio, deliveries and the Odoo sync. It names the room and
+counts only; never people, addresses, transcript or minutes text.
+
+It only reads the database and never approves, retries or sends anything to
+participants. The first run records what already exists without mailing it.
+
+```sh
+/opt/transgenia-meetings/bin/sessionwatch.sh --dry-run             # what it would send now
+/opt/transgenia-meetings/bin/sessionwatch.sh --resend <capture id> # repeat one notice
+systemctl disable --now tgn-meetings-sessionwatch.timer            # turn it off
+```
+
+Install or update:
+
+```sh
+install -o root -g root -m 0755 /opt/transgenia-meetings/src/deploy/transgenia/scripts/sessionwatch.sh /opt/transgenia-meetings/bin/sessionwatch.sh
+install -o root -g root -m 0644 /opt/transgenia-meetings/src/deploy/transgenia/systemd/tgn-meetings-sessionwatch.service /opt/transgenia-meetings/src/deploy/transgenia/systemd/tgn-meetings-sessionwatch.timer /etc/systemd/system/
+systemctl daemon-reload && systemctl enable --now tgn-meetings-sessionwatch.timer
+```
+
+`deploy/transgenia/scripts/sessionwatch.test.sh` runs it against a throwaway
+database and a fake mailer.
 
 ## Secrets
 

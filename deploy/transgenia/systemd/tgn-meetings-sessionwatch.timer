@@ -1,0 +1,10 @@
+[Unit]
+Description=tgn-meetings: session check every 5 minutes
+
+[Timer]
+OnBootSec=4min
+OnUnitActiveSec=5min
+Persistent=false
+
+[Install]
+WantedBy=timers.target
