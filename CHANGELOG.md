@@ -15,6 +15,9 @@ and this project adheres to
   usage, instead of failing the whole capture as an uncertain request
 - The minutes page no longer offers a paid retry when the failure is the local
   transcript check, which a retry cannot pass and which never reaches the model
+- Participants who joined a captured meeting more than five minutes after it
+  started are proposed as recipients of the minutes; the window now runs until
+  the capture ends instead of stopping at its start
 
 ### Added
 

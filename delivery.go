@@ -82,10 +82,17 @@ type Recipient struct {
 func (db *DB) ProposedRecipients(m *Minutes) ([]Recipient, error) {
 	byEmail := map[string]*Recipient{}
 	start := m.MeetingAt.Add(-4 * time.Hour)
+	end := m.MeetingAt
 	if runID, ok := strings.CutPrefix(m.SessionID, "captura-"); ok {
-		var started int64
-		if db.conn.QueryRow("SELECT started_at FROM capture_runs WHERE id = ?", runID).Scan(&started) == nil {
+		var started, finished int64
+		// The minutes of a capture are dated at its start, not at a transcript
+		// event after the meeting. Whoever joined later, until the last audio
+		// or connection report, took part too.
+		if db.conn.QueryRow("SELECT started_at, MAX(COALESCE(ended_at, 0), last_activity_at) FROM capture_runs WHERE id = ?", runID).Scan(&started, &finished) == nil {
 			start = time.Unix(started, 0)
+			if t := time.Unix(finished, 0); t.After(end) {
+				end = t
+			}
 		}
 	}
 
@@ -129,7 +136,7 @@ func (db *DB) ProposedRecipients(m *Minutes) ([]Recipient, error) {
 	rows, err = db.conn.Query(
 		`SELECT email, display_name FROM session_participants
 		 WHERE room_slug = ? AND source IN (`+sources+`) AND joined_at BETWEEN ? AND ? ORDER BY joined_at`,
-		m.RoomSlug, start.Add(-15*time.Minute).Unix(), m.MeetingAt.Add(5*time.Minute).Unix())
+		m.RoomSlug, start.Add(-15*time.Minute).Unix(), end.Add(5*time.Minute).Unix())
 	if err != nil {
 		return nil, err
 	}
