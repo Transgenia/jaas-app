@@ -1,0 +1,12 @@
+[Unit]
+Description=tgn-meetings: tell the host what happened to each captured meeting
+Requires=docker.service
+After=docker.service
+OnFailure=tgn-meetings-alert@%n.service
+
+[Service]
+Type=oneshot
+StateDirectory=tgn-meetings-sessionwatch
+StateDirectoryMode=0700
+ExecStart=/opt/transgenia-meetings/bin/sessionwatch.sh
+TimeoutStartSec=2min

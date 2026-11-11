@@ -35,6 +35,14 @@ and this project adheres to
   (tests, image, backup, migration rehearsal, switch, verification with
   automatic return to the previous image), plus `rollback`, `status` and
   `--dry-run`; the deployment README now maps where everything lives
+- `CAPTURE_AUTO_PROCESS=true` processes a capture without the host's click
+  once its meeting ended `CAPTURE_AUTO_PROCESS_AFTER_MINUTES` ago (default 10),
+  through the same approval checks. Captures with under a minute of audio,
+  unfinished tracks, a cancellation or more than a day old still wait for the
+  host. The join page, the meeting page and the panel state which mode applies
+- `deploy/transgenia/scripts/sessionwatch.sh` and its timer: one e-mail to the
+  host per captured meeting whenever it needs a person or is finished, with
+  the audio, transcript, delivery and Odoo checks that were done by hand
 
 ## [0.1.0] - 2026-07-16
 

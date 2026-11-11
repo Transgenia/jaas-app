@@ -778,6 +778,9 @@ func (app *App) processCapture(ctx context.Context) bool {
 	if app.Transcriber == nil {
 		return false
 	}
+	if app.Config.CaptureAutoProcess {
+		app.autoApproveCaptures()
+	}
 	var id string
 	var attempts int
 	err := db.conn.QueryRow(`SELECT s.id,s.attempts FROM audio_streams s JOIN capture_runs r ON r.id=s.run_id WHERE r.status='transcribing' AND r.processing_approved_at IS NOT NULL AND r.cancelled_at IS NULL AND s.status='closed' AND s.finalized_at IS NOT NULL AND s.purged_at IS NULL AND s.next_attempt_at<=? ORDER BY s.started_at,s.id LIMIT 1`, now.Unix()).Scan(&id, &attempts)
@@ -800,6 +803,45 @@ func (app *App) processCapture(ctx context.Context) bool {
 	}
 	app.finishRun(run)
 	return false // do not spin on a failed database consolidation
+}
+
+// Automatic processing only takes meetings that just ended and have something
+// to transcribe. Anything else waits for a person.
+const (
+	autoProcessMinAudio = time.Minute
+	autoProcessMaxAge   = 24 * time.Hour
+)
+
+// autoApproveCaptures applies the operator's standing approval
+// (CAPTURE_AUTO_PROCESS) to captures whose meeting has ended. It goes through
+// ApproveCapture, so it passes the same checks as the host's button, never
+// overrides a cancellation and leaves an incomplete capture untouched.
+func (app *App) autoApproveCaptures() {
+	db := app.DB
+	now := db.now()
+	rows, err := db.conn.Query(`SELECT r.id FROM capture_runs r
+	 WHERE r.status='open' AND r.processing_approved_at IS NULL AND r.cancelled_at IS NULL
+	 AND r.last_activity_at<=? AND r.last_activity_at>=?
+	 AND (SELECT COALESCE(SUM(MAX(COALESCE(s.ended_at_ms,s.last_chunk_at*1000)-s.started_at,0)),0)
+	  FROM audio_streams s WHERE s.run_id=r.id)>=?
+	 ORDER BY r.id`, now.Add(-app.Config.CaptureAutoProcessAfter).Unix(), now.Add(-autoProcessMaxAge).Unix(), autoProcessMinAudio.Milliseconds())
+	if err != nil {
+		slog.Error("capture: automatic approval query failed")
+		return
+	}
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if rows.Scan(&id) == nil {
+			ids = append(ids, id)
+		}
+	}
+	rows.Close()
+	for _, id := range ids {
+		if db.ApproveCapture(id) == nil {
+			slog.Info("capture: processing approved automatically", "run", id)
+		}
+	}
 }
 
 func (app *App) resultPath(id string) string  { return filepath.Join(app.audioDir(), id+".result.json") }

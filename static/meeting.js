@@ -1,9 +1,11 @@
 // Meeting values arrive through data attributes. Capture is opt-in and no AI
-// request is made here: the host approves processing later in the admin.
+// request is made here: processing starts later, on the host's approval or,
+// when the server is configured so, automatically after the meeting ends.
 (function () {
 	"use strict"
 	var el = document.getElementById("meet"), d = el.dataset
 	var policy = window.MeetCaptureOptions
+	var notices = policy.captureNotices(d.autoProcess === "true")
 	var panel = document.getElementById("audio-setup")
 	var language = document.getElementById("meeting-language")
 	var shared = document.getElementById("shared-microphone")
@@ -188,7 +190,7 @@
 		Promise.resolve(capture ? capture.stop() : true).then(function (saved) {
 			endParticipation()
 			sendEnd()
-			showEnded(!capture ? "La reunión terminó." : saved ? "La reunión terminó. Audio recibido para revisión; el procesamiento requiere aprobación." : "La reunión terminó. No se pudo confirmar toda la subida de audio; revisa la captura en administración.")
+			showEnded(!capture ? "La reunión terminó." : saved ? notices.saved : "La reunión terminó. No se pudo confirmar toda la subida de audio; revisa la captura en administración.")
 		})
 	}
 	join.addEventListener("click", function () {
@@ -377,7 +379,7 @@
 			try { rec.start(policy.CHUNK_MS) }
 			catch (err) { reportCapture("device_error"); failed = true; settleRecorder(); closeStream(true); say("No se pudo iniciar la captura.", "off"); return }
 			item.rotate = setTimeout(function () { closeStream(false).then(openStream) }, policy.ROTATE_MS)
-			say("Capturando audio; procesamiento requiere aprobación")
+			say(notices.recording)
 		}
 		function openStream() {
 			if (stopped || failed || muted || current || acquiring) return

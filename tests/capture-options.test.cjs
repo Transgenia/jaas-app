@@ -297,3 +297,13 @@ test("the pause reminder waits a minute and names the Jitsi microphone", () => {
   assert.match(shared, /Nadie en esta sala/)
   assert.match(policy.pauseReminder(60000, false), /desde hace 1 min.*tu audio/)
 })
+
+test("the capture badge tells participants which processing mode applies", () => {
+  const manual = policy.captureNotices(false), automatic = policy.captureNotices(true)
+  assert.match(manual.recording, /requiere aprobación/)
+  assert.match(manual.saved, /requiere aprobación/)
+  assert.match(automatic.recording, /al terminar la reunión/)
+  assert.match(automatic.saved, /automáticamente/)
+  assert.doesNotMatch(automatic.recording + automatic.saved, /aprobación/)
+  assert.deepEqual(policy.captureNotices(undefined), manual)
+})
